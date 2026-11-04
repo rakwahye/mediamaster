@@ -9,9 +9,11 @@
 #include <stddef.h>
 
 const struct mm_plugin *mm_static_entry_null(void);
+const struct mm_plugin *mm_static_entry_raw(void);
 
 static mm_plugin_entry_fn const s_builtins[] = {
 	mm_static_entry_null,
+	mm_static_entry_raw,
 };
 
 void builtins_add_all(void)

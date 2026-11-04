@@ -36,18 +36,30 @@ WARN := -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wformat
 HOST_CFLAGS := -std=c11 $(WARN) $(OPT) $(SAN_FLAGS) -D_GNU_SOURCE \
                -Iinclude -Isrc/host \
                -DMM_PLUGIN_DIR=\"$(PLUGIN_DIR)\" -DMM_VERSION=\"$(VERSION)\"
-HOST_LIBS   := -ldl -lpthread $(SAN_FLAGS)
+HOST_LIBS   := -ldl -lpthread -lm $(SAN_FLAGS)
 
 # Plugins: strict C99 against the ABI header only.
 PLUG_CFLAGS := -std=c99 -pedantic $(WARN) $(OPT) $(SAN_FLAGS) -D_POSIX_C_SOURCE=200809L \
                -Iinclude -fPIC -fvisibility=hidden
 PLUG_LDFLAGS := -shared $(SAN_FLAGS)
 
-PLUGINS := null
+# Built in (no dependencies) and also built as .so.
+PLUGINS_STATIC := null raw
+# Shared objects; pipewire only when its headers are installed.
+PLUGINS := null raw
+HAVE_PIPEWIRE := $(shell pkg-config --exists libpipewire-0.3 && echo 1)
+ifeq ($(HAVE_PIPEWIRE),1)
+  PLUGINS += pipewire
+endif
 
-HOST_SRC := main.c log.c config.c paths.c ipc.c loader.c builtins.c
+# Per-plugin extras.
+LIBS_raw := -lm
+CFLAGS_pipewire := $(shell pkg-config --cflags libpipewire-0.3 2>/dev/null) -std=gnu99 -Wno-pedantic -Wno-missing-prototypes
+LIBS_pipewire := $(shell pkg-config --libs libpipewire-0.3 2>/dev/null)
+
+HOST_SRC := main.c log.c config.c paths.c ipc.c loader.c builtins.c ring.c player.c
 HOST_OBJ := $(addprefix $(BUILD)/host/,$(HOST_SRC:.c=.o)) \
-            $(foreach p,$(PLUGINS),$(BUILD)/static/$(p).o)
+            $(foreach p,$(PLUGINS_STATIC),$(BUILD)/static/$(p).o)
 MMCTL_OBJ := $(BUILD)/obj-mmctl/mmctl.o $(BUILD)/host/paths.o
 PLUGIN_SO := $(foreach p,$(PLUGINS),$(BUILD)/plugins/$(p).so)
 
@@ -67,11 +79,11 @@ $(BUILD)/obj-mmctl/%.o: src/mmctl/%.c $(HDRS)
 
 $(BUILD)/static/%.o: $$(wildcard plugins/$$*/*.c) include/mm_plugin.h
 	@mkdir -p $(@D)
-	$(CC) $(PLUG_CFLAGS) -DMM_PLUGIN_STATIC -c $(filter %.c,$^) -o $@
+	$(CC) $(PLUG_CFLAGS) $(CFLAGS_$*) -DMM_PLUGIN_STATIC -c $(filter %.c,$^) -o $@
 
 $(BUILD)/plugins/%.so: $$(wildcard plugins/$$*/*.c) include/mm_plugin.h
 	@mkdir -p $(@D)
-	$(CC) $(PLUG_CFLAGS) $(filter %.c,$^) $(PLUG_LDFLAGS) -o $@
+	$(CC) $(PLUG_CFLAGS) $(CFLAGS_$*) $(filter %.c,$^) $(PLUG_LDFLAGS) $(LIBS_$*) -lpthread -o $@
 
 $(BUILD)/mediamaster: $(HOST_OBJ)
 	$(CC) $^ $(HOST_LIBS) -o $@
@@ -96,12 +108,23 @@ $(T)/test-loader: tests/loader_test.c src/host/loader.c src/host/ipc.c src/host/
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c,$^) $(HOST_LIBS) -o $@
 
-TESTS := $(T)/test-config $(T)/test-ipc $(T)/test-loader
+$(T)/test-ring: tests/ring_test.c src/host/ring.c $(HDRS) tests/check.h
+	@mkdir -p $(@D)
+	$(CC) $(TEST_CFLAGS) $(filter %.c,$^) $(HOST_LIBS) -o $@
+
+PLAYER_DEPS := src/host/player.c src/host/ring.c src/host/loader.c src/host/ipc.c src/host/config.c src/host/log.c
+$(T)/test-player: tests/player_test.c $(PLAYER_DEPS) $(BUILD)/static/raw.o $(HDRS) tests/check.h
+	@mkdir -p $(@D)
+	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
+
+TESTS := $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player
 
 unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-config
 	@$(T)/test-ipc
 	@$(T)/test-loader $(BUILD)/plugins
+	@$(T)/test-ring
+	@$(T)/test-player
 
 smoke: all
 	@sh tests/smoke.sh $(BUILD)

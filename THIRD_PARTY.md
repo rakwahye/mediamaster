@@ -11,7 +11,8 @@ Project license: LGPL-2.1-or-later (see LICENSE).
 
 | Component | License | Since | Used by |
 |---|---|---|---|
-| glibc (libc, libdl, libpthread) | LGPL-2.1-or-later | initial | host |
+| glibc (libc, libdl, libpthread, libm) | LGPL-2.1-or-later | initial | host, plugins |
+| libpipewire-0.3 | MIT | ring/sink commit | `pipewire.so` (optional; built when headers are present) |
 
 ## Vendored
 

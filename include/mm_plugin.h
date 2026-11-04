@@ -92,9 +92,73 @@ struct mm_host {
 	void *ctx; /* host-private */
 };
 
-/* Interface ops tables. Forward-declared ones are not defined yet. */
-struct mm_source_ops;
-struct mm_sink_ops;
+/* ------------------------------------------------------------------ PCM
+ *
+ * Between sources and sinks audio is always interleaved float32 at
+ * MM_PCM_RATE with MM_PCM_CHANNELS channels. Conversion happens at the
+ * edges, inside the plugins. */
+
+#define MM_PCM_RATE     48000u
+#define MM_PCM_CHANNELS 2u
+
+/* ------------------------------------------------------------------ source */
+
+enum mm_stream_flags {
+	MM_STREAM_SEEKABLE = 1u << 0,
+	MM_STREAM_LIVE     = 1u << 1  /* no end, no duration (radio, generators) */
+};
+
+struct mm_stream_info {
+	uint64_t duration_ms; /* 0 = unknown */
+	uint32_t flags;       /* enum mm_stream_flags */
+};
+
+/** Turns a URI into PCM. The host owns the thread that calls `read` and
+ * the ring the PCM goes into; a source only produces samples.
+ *
+ * `open` and `close` run on host control threads; `read` and `seek` on
+ * the host's reader thread, never concurrently for one stream.
+ * `interrupt` may come from any thread while `read` is blocked. */
+struct mm_source_ops {
+	/** Open `uri` (one of the plugin's schemes). Fill *stream and *info.
+	 * @returns 0, or nonzero with nothing to close. */
+	int (*open)(void *priv, const char *uri, void **stream, struct mm_stream_info *info);
+
+	/** Read up to `frames` frames into dst. May return fewer; blocks until
+	 * at least one frame or the end. @returns frames read, 0 at end (or
+	 * after `interrupt`), negative on error. */
+	long (*read)(void *stream, float *dst, uint32_t frames);
+
+	/** Optional (needs MM_STREAM_SEEKABLE). Reposition to `ms`; clears a
+	 * pending interrupt. @returns 0 on success. */
+	int (*seek)(void *stream, uint64_t ms);
+
+	/** Optional. Make a blocked or the next `read` return 0 promptly. */
+	void (*interrupt)(void *stream);
+
+	void (*close)(void *stream);
+};
+
+/* ------------------------------------------------------------------ sink */
+
+/** Host-owned PCM supplier handed to a sink. Fills `frames` frames into
+ * dst, always completely (silence when there is nothing to play).
+ * Realtime-safe: no locks, no allocation, no syscalls. */
+typedef void (*mm_pull_fn)(void *ctx, float *dst, uint32_t frames);
+
+/** Plays what the host's pull function supplies. Volume, pause, mixing
+ * and the identification tap all live in the host, so a sink is only a
+ * clock and a device. */
+struct mm_sink_ops {
+	/** Open the device and start calling `pull(ctx, ...)` from the sink's
+	 * own (preferably realtime) thread. @returns 0 on success. */
+	int (*start)(void *priv, mm_pull_fn pull, void *ctx);
+	/** Stop calling pull and release the device. After return, pull is
+	 * never called again. */
+	void (*stop)(void *priv);
+};
+
+/* Interface ops tables not defined yet: leave NULL. */
 struct mm_catalog_ops;
 struct mm_identify_ops;
 struct mm_enrich_ops;

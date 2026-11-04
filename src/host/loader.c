@@ -228,6 +228,33 @@ void loader_fini_all(void)
 	s_n = 0;
 }
 
+int loader_find_source(const char *scheme, const struct mm_plugin **p, void **priv)
+{
+	for (size_t i = 0; i < s_n; i++) {
+		const struct slot *s = &s_slots[i];
+		if (s->state != MM_PLUGIN_ACTIVE || !s->p->source || !s->p->schemes) continue;
+		if (in_list(s->p->schemes, scheme)) {
+			*p = s->p;
+			*priv = s->priv;
+			return 0;
+		}
+	}
+	return -1;
+}
+
+int loader_find_sink(const char *name, const struct mm_plugin **p, void **priv)
+{
+	for (size_t i = 0; i < s_n; i++) {
+		const struct slot *s = &s_slots[i];
+		if (s->state == MM_PLUGIN_ACTIVE && s->p->sink && !strcmp(s->p->name, name)) {
+			*p = s->p;
+			*priv = s->priv;
+			return 0;
+		}
+	}
+	return -1;
+}
+
 int loader_state(const char *name)
 {
 	for (size_t i = 0; i < s_n; i++)

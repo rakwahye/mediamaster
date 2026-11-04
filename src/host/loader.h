@@ -43,6 +43,13 @@ void loader_reload_all(void);
 /** Fini active plugins in reverse order, drop their verbs, dlclose. */
 void loader_fini_all(void);
 
+/** Active plugin with source ops claiming URI scheme `scheme`.
+ * @returns 0 and fills *p / *priv, or -1. */
+int loader_find_source(const char *scheme, const struct mm_plugin **p, void **priv);
+
+/** Active plugin named `name` that has sink ops. @returns 0 or -1. */
+int loader_find_sink(const char *name, const struct mm_plugin **p, void **priv);
+
 /** State of plugin `name`, or -1 if unknown. */
 int loader_state(const char *name);
 

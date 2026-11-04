@@ -2,7 +2,8 @@
 /** @file main.c
  * @brief mediamaster daemon entry point.
  *
- * Startup order: config, (daemonize), signals, host verbs, plugins, IPC.
+ * Startup order: config, (daemonize), signals, host verbs, plugins,
+ * player (sink), IPC.
  * The main thread then sleeps in poll() on a signalfd and a wake eventfd,
  * and runs the work that must not happen on the IPC thread (reload,
  * shutdown). Every signal is blocked before any thread exists, so the
@@ -14,6 +15,7 @@
 #include "loader.h"
 #include "log.h"
 #include "paths.h"
+#include "player.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -188,9 +190,16 @@ int main(int argc, char **argv)
 	if (config_get_bool("host.builtins", 1)) builtins_add_all();
 	loader_scan(config_get_str("host.plugin_dir", mm_paths_plugin_dirs()));
 	loader_init_all();
+	if (player_init() != 0) {
+		loader_fini_all();
+		ipc_unregister_owner("host");
+		config_free();
+		return 1;
+	}
 
 	const char *sock = config_get_str("host.socket", mm_paths_socket());
 	if (ipc_start(sock) != 0) {
+		player_fini();
 		loader_fini_all();
 		ipc_unregister_owner("host");
 		config_free();
@@ -199,11 +208,14 @@ int main(int argc, char **argv)
 
 	while (!atomic_load(&s_quit)) {
 		struct pollfd pf[2] = { { sfd, POLLIN, 0 }, { s_wake, POLLIN, 0 } };
-		if (poll(pf, 2, -1) < 0) {
+		int pr = poll(pf, 2, 50); /* tick for the player */
+		if (pr < 0) {
 			if (errno == EINTR) continue;
 			LOGE(TAG, "poll: %s", strerror(errno));
 			break;
 		}
+		player_tick();
+		if (pr == 0) continue;
 		if (pf[0].revents & POLLIN) {
 			struct signalfd_siginfo si;
 			if (read(sfd, &si, sizeof(si)) == (ssize_t)sizeof(si)) {
@@ -225,6 +237,7 @@ int main(int argc, char **argv)
 
 	LOGI(TAG, "shutting down");
 	ipc_stop();
+	player_fini();
 	loader_fini_all();
 	ipc_unregister_owner("host");
 	config_free();
