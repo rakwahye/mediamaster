@@ -58,7 +58,7 @@ CFLAGS_ffmpeg := -D_GNU_SOURCE
 CFLAGS_pipewire := $(shell pkg-config --cflags libpipewire-0.3 2>/dev/null) -std=gnu99 -Wno-pedantic -Wno-missing-prototypes
 LIBS_pipewire := $(shell pkg-config --libs libpipewire-0.3 2>/dev/null)
 
-HOST_SRC := main.c log.c config.c paths.c ipc.c loader.c builtins.c ring.c player.c
+HOST_SRC := main.c log.c config.c paths.c ipc.c loader.c builtins.c ring.c player.c queue.c
 HOST_OBJ := $(addprefix $(BUILD)/host/,$(HOST_SRC:.c=.o)) \
             $(foreach p,$(PLUGINS_STATIC),$(BUILD)/static/$(p).o)
 MMCTL_OBJ := $(BUILD)/obj-mmctl/mmctl.o $(BUILD)/host/paths.o
@@ -122,7 +122,11 @@ $(T)/test-ffmpeg: tests/ffmpeg_test.c src/host/loader.c src/host/ipc.c src/host/
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
 
-TESTS := $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player $(T)/test-ffmpeg
+$(T)/test-queue: tests/queue_test.c src/host/queue.c $(PLAYER_DEPS) $(BUILD)/static/raw.o $(HDRS) tests/check.h
+	@mkdir -p $(@D)
+	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
+
+TESTS := $(T)/test-queue $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player $(T)/test-ffmpeg
 
 unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-config
@@ -130,6 +134,7 @@ unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-loader $(BUILD)/plugins
 	@$(T)/test-ring
 	@$(T)/test-player
+	@$(T)/test-queue
 	@$(T)/test-ffmpeg
 
 smoke: all

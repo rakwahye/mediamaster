@@ -3,7 +3,7 @@
  * @brief mediamaster daemon entry point.
  *
  * Startup order: config, (daemonize), signals, host verbs, plugins,
- * player (sink), IPC.
+ * player (sink), queue, IPC.
  * The main thread then sleeps in poll() on a signalfd and a wake eventfd,
  * and runs the work that must not happen on the IPC thread (reload,
  * shutdown). Every signal is blocked before any thread exists, so the
@@ -16,6 +16,7 @@
 #include "log.h"
 #include "paths.h"
 #include "player.h"
+#include "queue.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -196,9 +197,11 @@ int main(int argc, char **argv)
 		config_free();
 		return 1;
 	}
+	if (queue_init() != 0) LOGW(TAG, "some queue verbs could not be registered");
 
 	const char *sock = config_get_str("host.socket", mm_paths_socket());
 	if (ipc_start(sock) != 0) {
+		queue_fini();
 		player_fini();
 		loader_fini_all();
 		ipc_unregister_owner("host");
@@ -214,7 +217,7 @@ int main(int argc, char **argv)
 			LOGE(TAG, "poll: %s", strerror(errno));
 			break;
 		}
-		player_tick();
+		if (player_tick()) queue_on_finished();
 		if (pr == 0) continue;
 		if (pf[0].revents & POLLIN) {
 			struct signalfd_siginfo si;
@@ -237,6 +240,7 @@ int main(int argc, char **argv)
 
 	LOGI(TAG, "shutting down");
 	ipc_stop();
+	queue_fini();
 	player_fini();
 	loader_fini_all();
 	ipc_unregister_owner("host");

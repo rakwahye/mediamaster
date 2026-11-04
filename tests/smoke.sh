@@ -51,7 +51,7 @@ start
 "$MMCTL" plugins | grep -q '^raw .*active.*ifaces=source.*builtin' || fail "builtin raw source not active"
 [ "$(field sink)" = null ] || fail "host.sink not honoured"
 if "$MMCTL" nosuch >/dev/null 2>&1; then fail "unknown verb should exit 1"; fi
-"$MMCTL" help | grep -q 'play <uri>' || fail "help lists playback verbs"
+"$MMCTL" help | grep -q 'play \[uri\]' || fail "help lists playback verbs"
 grep -q "already provided by builtin" "$T/log" || fail "duplicate .so not reported"
 
 # a half-second tone, played to the end through the daemon
@@ -115,6 +115,21 @@ if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
 	fi
 	if "$MMCTL" play "$T/nope.flac" >/dev/null 2>&1; then fail "a missing file should be refused"; fi
 fi
+
+# the queue: two tones play back to back, then playback stops
+"$MMCTL" queue clear >/dev/null
+"$MMCTL" queue add sine:220:0.3 sine:440:0.3 sine:660:0.3 | grep -qx 'ok added 1-3' || fail "queue add"
+"$MMCTL" queue | grep -q '^  3  sine:660:0.3$' || fail "queue list"
+"$MMCTL" queue rm 1 >/dev/null || fail "queue rm"
+"$MMCTL" null reset >/dev/null
+"$MMCTL" play | grep -q '^ok playing sine:440:0.3' || fail "play starts the queue"
+wait_state stopped 40
+"$MMCTL" queue | grep -q '^> 2  sine:660:0.3$' || fail "the queue did not advance to the second tone"
+loud=$("$MMCTL" null | sed -n 's/.*nonsilent=\([0-9]*\).*/\1/p')
+[ "$loud" -ge 28000 ] || fail "expected ~28800 audible frames from two tones, got $loud"
+if "$MMCTL" next >/dev/null 2>&1; then fail "next past the end should fail"; fi
+"$MMCTL" prev | grep -q '^ok playing 1: sine:440:0.3' || fail "prev"
+"$MMCTL" stop >/dev/null
 
 # reload is acknowledged and performed
 "$MMCTL" reload | grep -q '^ok reload queued' || fail "reload not acknowledged"

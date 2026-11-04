@@ -400,8 +400,9 @@ int player_state(void)
 	return s;
 }
 
-void player_tick(void)
+int player_tick(void)
 {
+	int finished = 0;
 	pthread_mutex_lock(&P.lock);
 	if (P.reader_on && atomic_load(&P.reader_done) &&
 	    atomic_load_explicit(&P.ended_item, memory_order_acquire) == P.item) {
@@ -409,7 +410,16 @@ void player_tick(void)
 		close_stream();
 		atomic_store(&P.cur_item, 0);
 		P.state = PLAYER_STOPPED;
+		finished = 1;
 	}
+	pthread_mutex_unlock(&P.lock);
+	return finished;
+}
+
+void player_current_uri(char *buf, size_t cap)
+{
+	pthread_mutex_lock(&P.lock);
+	snprintf(buf, cap, "%s", P.uri);
 	pthread_mutex_unlock(&P.lock);
 }
 
@@ -421,26 +431,6 @@ uint32_t player_tap_read(float *dst, uint32_t frames) { return ring_read(&P.tap,
 uint64_t player_tap_overruns(void) { return atomic_load(&P.tap_overruns); }
 
 /* ------------------------------------------------------------------ verbs */
-
-static int v_play(void *priv, struct mm_verb_ctx *c)
-{
-	(void)priv;
-	if (c->argc < 2) {
-		snprintf(c->reply, c->reply_len, "usage: play <uri>");
-		return MM_ERR;
-	}
-	char uri[1024];
-	size_t off = 0;
-	for (int i = 1; i < c->argc && off < sizeof(uri); i++)
-		off += (size_t)snprintf(uri + off, sizeof(uri) - off, "%s%s", i > 1 ? " " : "", c->argv[i]);
-	char err[256];
-	if (player_play(uri, err, sizeof(err)) != 0) {
-		snprintf(c->reply, c->reply_len, "%s", err);
-		return MM_ERR;
-	}
-	snprintf(c->reply, c->reply_len, "playing %s", uri);
-	return MM_OK;
-}
 
 static int v_stop(void *priv, struct mm_verb_ctx *c)
 {
@@ -543,7 +533,6 @@ static int v_status(void *priv, struct mm_verb_ctx *c)
 static int register_verbs(void)
 {
 	int rc = 0;
-	rc |= ipc_register("player", "play", "<uri>\tplay a URI (sine:440, raw:/path.f32, ...)", v_play, NULL);
 	rc |= ipc_register("player", "stop", "\tstop and clear the buffer", v_stop, NULL);
 	rc |= ipc_register("player", "pause", "\tpause", v_pause, NULL);
 	rc |= ipc_register("player", "resume", "\tresume", v_resume, NULL);

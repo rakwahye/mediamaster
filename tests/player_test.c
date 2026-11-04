@@ -286,7 +286,7 @@ int main(void)
 
 	CHECK(player_init() == 0, "the player starts");
 	CHECK(s_started == 1 && s_pull, "a failing sink is skipped for the next in host.sink");
-	CHECK(ipc_has_verb("play") && ipc_has_verb("status"), "playback verbs are registered");
+	CHECK(ipc_has_verb("pause") && ipc_has_verb("seek") && ipc_has_verb("status") && !ipc_has_verb("play"), "transport verbs are registered; play belongs to the queue");
 
 	RUN(finite_stream);
 	RUN(pause_volume_tap);
@@ -296,7 +296,7 @@ int main(void)
 
 	player_fini();
 	CHECK(s_stopped == 1, "fini stops the sink");
-	CHECK(!ipc_has_verb("play"), "fini drops the playback verbs");
+	CHECK(!ipc_has_verb("status"), "fini drops the playback verbs");
 	loader_fini_all();
 	config_free();
 	CHECK_PASS("test-player");

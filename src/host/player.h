@@ -30,8 +30,9 @@ int player_init(void);
 /** Stop playback, stop the sink, drop the verbs. Call before plugins fini. */
 void player_fini(void);
 
-/** Housekeeping from the main loop: retire a stream that has finished. */
-void player_tick(void);
+/** Housekeeping from the main loop: retire a stream that has finished.
+ * @returns 1 if a stream played to its natural end on this tick. */
+int player_tick(void);
 
 /* Control API (also behind the verbs). err/errlen get a reason on failure. */
 int player_play(const char *uri, char *err, size_t errlen);
@@ -46,6 +47,8 @@ uint32_t player_buffered_frames(void);
 /** Gaps in the sink's audio after an item started flowing and before its
  * end. Startup latency after play or seek is not counted. */
 uint64_t player_underruns(void);
+/** URI of the open stream into buf ("" when stopped). */
+void player_current_uri(char *buf, size_t cap);
 /** Position of the item at the speaker, in ms. */
 uint64_t player_position_ms(void);
 
