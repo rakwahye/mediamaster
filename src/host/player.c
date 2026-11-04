@@ -68,6 +68,7 @@ static struct {
 	/* Sink thread only. */
 	unsigned seen_drop_seq;
 	float cur_gain;
+	int flowing; /* audio of the current item has reached the sink */
 } P = { .lock = PTHREAD_MUTEX_INITIALIZER };
 
 /* ------------------------------------------------------------------ RT side */
@@ -80,6 +81,7 @@ static void apply_marker(const struct mm_mark *m)
 	if (m->kind == MM_MARK_START) {
 		atomic_store_explicit(&P.cur_item, m->item, memory_order_relaxed);
 		atomic_store_explicit(&P.item_frames, m->offset, memory_order_relaxed);
+		P.flowing = 0; /* startup latency after play/seek is not an underrun */
 	} else if (m->kind == MM_MARK_END) {
 		atomic_store_explicit(&P.ended_item, m->item, memory_order_release);
 	}
@@ -95,6 +97,7 @@ static void pull(void *ctx, float *dst, uint32_t frames)
 		struct mm_mark m;
 		while (markq_peek(&P.marks, &m) && (int64_t)(m.pos - to) < 0) markq_pop(&P.marks);
 		P.seen_drop_seq = seq;
+		P.flowing = 0;
 	}
 
 	if (atomic_load_explicit(&P.paused, memory_order_relaxed)) {
@@ -119,11 +122,13 @@ static void pull(void *ctx, float *dst, uint32_t frames)
 		if (!got) break;
 		atomic_fetch_add_explicit(&P.item_frames, got, memory_order_relaxed);
 		done += got;
+		P.flowing = 1;
 	}
 	if (done < frames) {
 		memset(dst + (size_t)done * CH, 0, (size_t)(frames - done) * CH * sizeof(float));
+		/* A gap after audio started, before the item's end. */
 		unsigned cur = atomic_load_explicit(&P.cur_item, memory_order_relaxed);
-		if (cur && cur != atomic_load_explicit(&P.ended_item, memory_order_relaxed))
+		if (P.flowing && cur && cur != atomic_load_explicit(&P.ended_item, memory_order_relaxed))
 			atomic_fetch_add_explicit(&P.underruns, 1, memory_order_relaxed);
 	}
 

@@ -43,7 +43,8 @@ int player_volume(void);
 int player_state(void);
 /** Frames queued in the play ring, not yet pulled by the sink. */
 uint32_t player_buffered_frames(void);
-/** Underruns while a stream was live (not counting after its end). */
+/** Gaps in the sink's audio after an item started flowing and before its
+ * end. Startup latency after play or seek is not counted. */
 uint64_t player_underruns(void);
 /** Position of the item at the speaker, in ms. */
 uint64_t player_position_ms(void);

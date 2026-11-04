@@ -129,7 +129,9 @@ unit: $(TESTS) $(PLUGIN_SO)
 smoke: all
 	@sh tests/smoke.sh $(BUILD)
 
-test: unit smoke
+# Sequential: smoke times real playback and must not compete with unit tests.
+test: unit
+	@$(MAKE) --no-print-directory smoke
 
 check-licenses:
 	@missing=$$(grep -L 'SPDX-License-Identifier' $$(git ls-files -co --exclude-standard \

@@ -7,6 +7,7 @@
 #include "loader.h"
 #include "check.h"
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,61 @@
 #include <unistd.h>
 
 const struct mm_plugin *mm_static_entry_raw(void);
+
+/* Gated source: hands out only the frames the test has allowed, blocking
+ * otherwise. Lets the test starve the sink on purpose. */
+static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
+static long g_allow;
+static int g_intr;
+
+static void gate_allow(long frames)
+{
+	pthread_mutex_lock(&g_mu);
+	g_allow += frames;
+	pthread_cond_broadcast(&g_cv);
+	pthread_mutex_unlock(&g_mu);
+}
+
+static int gate_open(void *priv, const char *uri, void **st, struct mm_stream_info *in)
+{
+	(void)priv; (void)uri;
+	pthread_mutex_lock(&g_mu);
+	g_allow = 0;
+	g_intr = 0;
+	pthread_mutex_unlock(&g_mu);
+	in->duration_ms = 0;
+	in->flags = MM_STREAM_LIVE;
+	*st = &g_allow;
+	return 0;
+}
+static long gate_read(void *st, float *dst, uint32_t frames)
+{
+	(void)st;
+	pthread_mutex_lock(&g_mu);
+	while (!g_allow && !g_intr) pthread_cond_wait(&g_cv, &g_mu);
+	long n = 0;
+	if (!g_intr) {
+		n = g_allow < (long)frames ? g_allow : (long)frames;
+		g_allow -= n;
+	}
+	g_intr = 0;
+	pthread_mutex_unlock(&g_mu);
+	for (long i = 0; i < n * (long)MM_PCM_CHANNELS; i++) dst[i] = 0.5f;
+	return n;
+}
+static void gate_interrupt(void *st)
+{
+	(void)st;
+	pthread_mutex_lock(&g_mu);
+	g_intr = 1;
+	pthread_cond_broadcast(&g_cv);
+	pthread_mutex_unlock(&g_mu);
+}
+static void gate_close(void *st) { (void)st; }
+static const struct mm_source_ops gate_ops = { .open = gate_open, .read = gate_read, .interrupt = gate_interrupt, .close = gate_close };
+static int gate_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
+static const struct mm_plugin gatesrc = { .abi = MM_ABI, .name = "gate", .schemes = "gate", .init = gate_init, .source = &gate_ops };
 
 static mm_pull_fn s_pull;
 static void *s_ctx;
@@ -195,6 +251,29 @@ static int replace_and_files(void)
 	return 0;
 }
 
+static int underruns(void)
+{
+	char err[128];
+	uint64_t base = player_underruns();
+	CHECK(player_play("gate:", err, sizeof(err)) == 0, "the gated source plays");
+	pull(480);
+	pull(480);
+	CHECK(player_underruns() == base, "silence before the first audio arrives is not an underrun");
+
+	gate_allow(960);
+	CHECK(wait_buffered(960) == 0, "the allowed audio is queued");
+	pull(480);
+	CHECK(player_underruns() == base, "audio flowing: no underrun");
+	pull(960);
+	CHECK(player_underruns() == base + 1, "running dry mid-stream counts one underrun");
+	CHECK(fabsf(s_buf[0] - 0.5f) < 1e-6f && s_buf[480 * CH] == 0.0f, "the sink gets the audio there was, then silence");
+
+	player_stop();
+	pull(480);
+	CHECK(player_underruns() == base + 1, "silence after stop is not an underrun");
+	return 0;
+}
+
 int main(void)
 {
 	config_override("host.sink=badsink, testsink");
@@ -202,6 +281,7 @@ int main(void)
 	loader_add(&badsink, NULL, "test");
 	loader_add(&testsink, NULL, "test");
 	loader_add(mm_static_entry_raw(), NULL, "builtin");
+	loader_add(&gatesrc, NULL, "test");
 	loader_init_all();
 
 	CHECK(player_init() == 0, "the player starts");
@@ -212,6 +292,7 @@ int main(void)
 	RUN(pause_volume_tap);
 	RUN(seeking);
 	RUN(replace_and_files);
+	RUN(underruns);
 
 	player_fini();
 	CHECK(s_stopped == 1, "fini stops the sink");
