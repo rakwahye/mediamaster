@@ -84,6 +84,38 @@ pos=$(field position)
 [ "${pos%%.*}" -ge 20 ] || fail "position after seek is $pos"
 "$MMCTL" stop >/dev/null
 
+# a real file through ffmpeg, then the same file over http
+if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+	ffmpeg -v error -f lavfi -i sine=f=440:d=1 -ac 2 "$T/tone one.flac" -y || fail "fixture"
+	"$MMCTL" null reset >/dev/null
+	"$MMCTL" play "$T/tone one.flac" | grep -q '^ok playing' || fail "play a file by path"
+	[ "$(field source)" = ffmpeg ] || fail "a bare path is not routed to ffmpeg"
+	[ "$(field seekable)" = yes ] || fail "a file should be seekable"
+	case "$(field duration)" in 0.99*|1.00*) ;; *) fail "duration $(field duration)";; esac
+	wait_state stopped 40
+	loud=$("$MMCTL" null | sed -n 's/.*nonsilent=\([0-9]*\).*/\1/p')
+	[ "$loud" -ge 47000 ] || fail "expected ~48000 audible frames from the file, got $loud"
+
+	if command -v python3 >/dev/null; then
+		port=$(python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+		python3 -I -m http.server "$port" --bind 127.0.0.1 --directory "$T" >/dev/null 2>&1 &
+		HTTP=$!
+		i=0
+		until python3 -I -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$port/')" 2>/dev/null; do
+			i=$((i + 1)); [ $i -lt 50 ] || { kill $HTTP; fail "http server did not start"; }
+			sleep 0.1
+		done
+		"$MMCTL" null reset >/dev/null
+		"$MMCTL" play "http://127.0.0.1:$port/tone%20one.flac" | grep -q '^ok playing' || { kill $HTTP; fail "play over http"; }
+		[ "$(field source)" = ffmpeg ] || { kill $HTTP; fail "http not routed to ffmpeg"; }
+		wait_state stopped 40
+		kill $HTTP
+		loud=$("$MMCTL" null | sed -n 's/.*nonsilent=\([0-9]*\).*/\1/p')
+		[ "$loud" -ge 47000 ] || fail "expected ~48000 audible frames over http, got $loud"
+	fi
+	if "$MMCTL" play "$T/nope.flac" >/dev/null 2>&1; then fail "a missing file should be refused"; fi
+fi
+
 # reload is acknowledged and performed
 "$MMCTL" reload | grep -q '^ok reload queued' || fail "reload not acknowledged"
 sleep 0.2

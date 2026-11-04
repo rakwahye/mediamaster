@@ -20,7 +20,12 @@ None yet.
 
 ## Spawned
 
-None yet.
+Run as separate processes, never linked or redistributed. Their license
+does not combine with ours; the user's installed build applies.
+
+| Program | License | Since | Used by |
+|---|---|---|---|
+| ffmpeg, ffprobe | LGPL-2.1-or-later, or GPL-2.0-or-later when built with `--enable-gpl` (most distribution builds) | ffmpeg source commit | `ffmpeg` source plugin |
 
 ## Read for design, not copied
 

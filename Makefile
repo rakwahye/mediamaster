@@ -44,9 +44,9 @@ PLUG_CFLAGS := -std=c99 -pedantic $(WARN) $(OPT) $(SAN_FLAGS) -D_POSIX_C_SOURCE=
 PLUG_LDFLAGS := -shared $(SAN_FLAGS)
 
 # Built in (no dependencies) and also built as .so.
-PLUGINS_STATIC := null raw
+PLUGINS_STATIC := null raw ffmpeg
 # Shared objects; pipewire only when its headers are installed.
-PLUGINS := null raw
+PLUGINS := null raw ffmpeg
 HAVE_PIPEWIRE := $(shell pkg-config --exists libpipewire-0.3 && echo 1)
 ifeq ($(HAVE_PIPEWIRE),1)
   PLUGINS += pipewire
@@ -54,6 +54,7 @@ endif
 
 # Per-plugin extras.
 LIBS_raw := -lm
+CFLAGS_ffmpeg := -D_GNU_SOURCE
 CFLAGS_pipewire := $(shell pkg-config --cflags libpipewire-0.3 2>/dev/null) -std=gnu99 -Wno-pedantic -Wno-missing-prototypes
 LIBS_pipewire := $(shell pkg-config --libs libpipewire-0.3 2>/dev/null)
 
@@ -117,7 +118,11 @@ $(T)/test-player: tests/player_test.c $(PLAYER_DEPS) $(BUILD)/static/raw.o $(HDR
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
 
-TESTS := $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player
+$(T)/test-ffmpeg: tests/ffmpeg_test.c src/host/loader.c src/host/ipc.c src/host/config.c src/host/log.c $(BUILD)/static/ffmpeg.o $(HDRS) tests/check.h
+	@mkdir -p $(@D)
+	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
+
+TESTS := $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player $(T)/test-ffmpeg
 
 unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-config
@@ -125,6 +130,7 @@ unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-loader $(BUILD)/plugins
 	@$(T)/test-ring
 	@$(T)/test-player
+	@$(T)/test-ffmpeg
 
 smoke: all
 	@sh tests/smoke.sh $(BUILD)
