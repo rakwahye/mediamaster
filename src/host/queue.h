@@ -8,9 +8,12 @@
  * Removing the item under the cursor does not interrupt playback; the
  * cursor is then "between" items, and `next` plays the one that followed.
  *
- * When a stream ends on its own, the queue advances, skipping items that
- * fail to open. At the end of the queue playback stops and the cursor
- * stays on the last item.
+ * Gapless: when the player asks, the queue preloads the next item that
+ * opens; the player crosses into it without a gap and the cursor moves
+ * when the new item reaches the speaker. If nothing was preloaded in time
+ * the queue starts the next item itself, skipping ones that fail to open.
+ * At the end of the queue playback stops and the cursor stays on the last
+ * item.
  *
  * Owns the verbs play, next, prev and queue. */
 
@@ -36,8 +39,13 @@ size_t queue_length(void);
 /** Cursor as a 1-based position, 0 when there is none. */
 long queue_cursor(void);
 
-/** The current stream played to its end: start the next playable item.
- * Called from the main loop. */
+/** Main-loop step: run player_tick, follow gapless advances, fall back to
+ * starting the next item when playback stopped, and preload the next item
+ * when the player asks. @returns the player's event bits. */
+int queue_tick(void);
+
+/** The current stream played to its end with nothing preloaded: start the
+ * next playable item (with a gap). queue_tick calls this. */
 void queue_on_finished(void);
 
 /** One line per item, "> " marking the cursor. */

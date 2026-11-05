@@ -30,9 +30,27 @@ int player_init(void);
 /** Stop playback, stop the sink, drop the verbs. Call before plugins fini. */
 void player_fini(void);
 
-/** Housekeeping from the main loop: retire a stream that has finished.
- * @returns 1 if a stream played to its natural end on this tick. */
+enum player_event {
+	PLAYER_EV_ADVANCED = 1, /* the speaker crossed into the preloaded item */
+	PLAYER_EV_FINISHED = 2  /* playback ended; nothing was preloaded */
+};
+
+/** Housekeeping from the main loop: follow the speaker across item
+ * boundaries, retire finished streams. @returns enum player_event bits. */
 int player_tick(void);
+
+/** Open `uri` as the item to follow the current one without a gap. Replaces
+ * an earlier preload. @returns 0, or -1 with a reason. */
+int player_preload(const char *uri, char *err, size_t errlen);
+/** Forget the preloaded item (the queue changed) and ask again. */
+void player_drop_preload(void);
+/** 0 = nothing preloaded, 1 = preloaded and unread,
+ * 2 = consumed: the reader is already in it, the speaker not yet. */
+int player_preload_state(void);
+/** 1 once per item, when it is within host.preload_s (default 10) of its
+ * end (or has ended) and nothing follows it yet: the caller should
+ * player_preload() the next item. */
+int player_wants_next(void);
 
 /* Control API (also behind the verbs). err/errlen get a reason on failure. */
 int player_play(const char *uri, char *err, size_t errlen);

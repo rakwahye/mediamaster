@@ -217,7 +217,7 @@ int main(int argc, char **argv)
 			LOGE(TAG, "poll: %s", strerror(errno));
 			break;
 		}
-		if (player_tick()) queue_on_finished();
+		queue_tick();
 		if (pr == 0) continue;
 		if (pf[0].revents & POLLIN) {
 			struct signalfd_siginfo si;

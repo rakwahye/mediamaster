@@ -8,7 +8,19 @@
  * bumps `drop_seq`. The sink's pull sees the new sequence, skips the tail
  * to drop_to and discards markers before it. Anything written after
  * drop_to (the next stream's audio, its START marker) survives, so control
- * never has to wait for the sink. */
+ * never has to wait for the sink. Markers carry the generation they were
+ * pushed in; the sink discards older generations on a flush.
+ *
+ * Gapless. Three stream slots:
+ *   spk  the item at the speaker
+ *   dec  the item the reader is reading (ahead of spk by the ring's fill)
+ *   nxt  preloaded, opened but unread
+ * When dec ends, the reader marks END, moves nxt into dec, marks START at
+ * the same frame and carries on writing: the sink crosses the boundary
+ * without a gap. At most one boundary is in flight (dec != spk); the tick
+ * retires spk once the speaker reaches dec. The reader and control share
+ * the slots under `slock`; the reader never takes `lock` (control holds it
+ * while joining the reader). */
 
 #include "player.h"
 #include "config.h"
@@ -31,6 +43,14 @@
 #define READ_CHUNK 1024u
 #define FULL_WAIT_NS (5 * 1000 * 1000)
 
+struct strm {
+	const struct mm_plugin *src_p;
+	void *stream;             /* NULL = empty slot */
+	struct mm_stream_info info;
+	char uri[1024];
+	uint32_t item;
+};
+
 static struct {
 	pthread_mutex_t lock; /* control-side state below, up to the RT block */
 	int inited;
@@ -38,11 +58,10 @@ static struct {
 	const struct mm_plugin *sink_p;
 	void *sink_priv;
 
-	const struct mm_plugin *src_p;
-	void *stream;
-	struct mm_stream_info info;
-	char uri[1024];
-	uint32_t item;
+	pthread_mutex_t slock; /* spk/dec/nxt, shared with the reader */
+	struct strm spk, dec, nxt;
+	uint32_t item_seq;
+	uint32_t next_asked;   /* dec item we last asked the queue to follow */
 	int state;
 	int vol;
 
@@ -50,6 +69,7 @@ static struct {
 	int reader_on;
 	atomic_int reader_stop;
 	atomic_int reader_done;
+	atomic_uint_least64_t dec_frames; /* frames of dec read so far */
 
 	/* Shared with the sink thread. */
 	struct mm_ring play, tap;
@@ -69,7 +89,7 @@ static struct {
 	unsigned seen_drop_seq;
 	float cur_gain;
 	int flowing; /* audio of the current item has reached the sink */
-} P = { .lock = PTHREAD_MUTEX_INITIALIZER };
+} P = { .lock = PTHREAD_MUTEX_INITIALIZER, .slock = PTHREAD_MUTEX_INITIALIZER };
 
 /* ------------------------------------------------------------------ RT side */
 
@@ -95,7 +115,7 @@ static void pull(void *ctx, float *dst, uint32_t frames)
 		uint64_t to = atomic_load_explicit(&P.drop_to, memory_order_relaxed);
 		ring_skip_to(&P.play, to);
 		struct mm_mark m;
-		while (markq_peek(&P.marks, &m) && (int64_t)(m.pos - to) < 0) markq_pop(&P.marks);
+		while (markq_peek(&P.marks, &m) && m.gen != seq) markq_pop(&P.marks);
 		P.seen_drop_seq = seq;
 		P.flowing = 0;
 	}
@@ -162,30 +182,56 @@ static void sleep_ns(long ns)
 	while (nanosleep(&ts, &ts) != 0 && errno == EINTR) { }
 }
 
+static int push_mark(uint32_t kind, uint32_t item, uint64_t offset)
+{
+	struct mm_mark m = {
+		.pos = ring_head(&P.play), .offset = offset, .item = item, .kind = kind,
+		.gen = atomic_load_explicit(&P.drop_seq, memory_order_relaxed),
+	};
+	if (markq_push(&P.marks, &m) != 0) {
+		LOGW(TAG, "marker queue full");
+		return -1;
+	}
+	return 0;
+}
+
+/* The reader owns P.dec while it runs; it changes dec only at a boundary,
+ * under slock. */
 static void *reader_main(void *arg)
 {
 	(void)arg;
 	static float buf[READ_CHUNK * CH]; /* one reader at a time */
-	const struct mm_source_ops *src = P.src_p->source;
-	void *stream = P.stream;
 
 	while (!atomic_load(&P.reader_stop)) {
-		long n = src->read(stream, buf, READ_CHUNK);
+		const struct mm_source_ops *src = P.dec.src_p->source;
+		long n = src->read(P.dec.stream, buf, READ_CHUNK);
 		if (n < 0) {
-			LOGW(TAG, "%s: read error %ld", P.uri, n);
-			break;
+			LOGW(TAG, "%s: read error %ld", P.dec.uri, n);
+			n = 0; /* treat as the end of this item */
 		}
-		if (n == 0) break;
+		if (n == 0) {
+			if (atomic_load(&P.reader_stop)) break; /* interrupted */
+			push_mark(MM_MARK_END, P.dec.item, 0);
+			pthread_mutex_lock(&P.slock);
+			int take = P.nxt.stream && P.spk.stream == P.dec.stream;
+			if (take) {
+				P.dec = P.nxt;
+				memset(&P.nxt, 0, sizeof(P.nxt));
+				atomic_store(&P.dec_frames, 0);
+			}
+			pthread_mutex_unlock(&P.slock);
+			if (!take) break;
+			push_mark(MM_MARK_START, P.dec.item, 0);
+			LOGD(TAG, "gapless into %s", P.dec.uri);
+			continue;
+		}
 		if (n > (long)READ_CHUNK) n = READ_CHUNK;
 		uint32_t off = 0;
 		while (off < (uint32_t)n && !atomic_load(&P.reader_stop)) {
 			off += ring_write(&P.play, buf + (size_t)off * CH, (uint32_t)n - off);
 			if (off < (uint32_t)n) sleep_ns(FULL_WAIT_NS);
 		}
-	}
-	if (!atomic_load(&P.reader_stop)) {
-		struct mm_mark m = { .pos = ring_head(&P.play), .item = P.item, .kind = MM_MARK_END };
-		if (markq_push(&P.marks, &m) != 0) LOGW(TAG, "marker queue full");
+		atomic_fetch_add(&P.dec_frames, off);
 	}
 	atomic_store(&P.reader_done, 1);
 	return NULL;
@@ -205,12 +251,17 @@ static int reader_start(void)
 	return 0;
 }
 
-/* Lock held. Interrupts a blocked read. */
+/* Lock held. Interrupts a blocked read. Stop is raised before dec is read
+ * under slock, so a reader crossing a boundary right now sees the stop
+ * flag before its next read, and an already-switched one gets the
+ * interrupt on the right stream. */
 static void reader_join(void)
 {
 	if (!P.reader_on) return;
 	atomic_store(&P.reader_stop, 1);
-	if (P.src_p->source->interrupt) P.src_p->source->interrupt(P.stream);
+	pthread_mutex_lock(&P.slock);
+	if (P.dec.stream && P.dec.src_p->source->interrupt) P.dec.src_p->source->interrupt(P.dec.stream);
+	pthread_mutex_unlock(&P.slock);
 	pthread_join(P.reader, NULL);
 	P.reader_on = 0;
 }
@@ -222,23 +273,26 @@ static void flush(void)
 	atomic_fetch_add_explicit(&P.drop_seq, 1, memory_order_release);
 }
 
-/* Lock held. */
-static void close_stream(void)
+static void strm_close(struct strm *t)
 {
-	reader_join();
-	if (P.stream) {
-		P.src_p->source->close(P.stream);
-		P.stream = NULL;
-	}
-	P.src_p = NULL;
-	P.uri[0] = '\0';
-	memset(&P.info, 0, sizeof(P.info));
+	if (t->stream) t->src_p->source->close(t->stream);
+	memset(t, 0, sizeof(*t));
 }
 
-static int push_start(uint64_t offset_frames)
+/* Lock held. Stop the reader and close every slot. */
+static void close_all(void)
 {
-	struct mm_mark m = { .pos = ring_head(&P.play), .offset = offset_frames, .item = P.item, .kind = MM_MARK_START };
-	return markq_push(&P.marks, &m);
+	reader_join();
+	pthread_mutex_lock(&P.slock);
+	struct strm spk = P.spk, dec = P.dec, nxt = P.nxt;
+	memset(&P.spk, 0, sizeof(P.spk));
+	memset(&P.dec, 0, sizeof(P.dec));
+	memset(&P.nxt, 0, sizeof(P.nxt));
+	pthread_mutex_unlock(&P.slock);
+	if (dec.stream && dec.stream != spk.stream) strm_close(&dec);
+	strm_close(&spk);
+	strm_close(&nxt);
+	P.next_asked = 0;
 }
 
 /* ------------------------------------------------------------------ control */
@@ -262,19 +316,31 @@ static void uri_scheme(const char *uri, char *out, size_t cap)
 	}
 }
 
-int player_play(const char *uri, char *err, size_t errlen)
+/* Resolve and open `uri` into t (lock held). */
+static int open_strm(const char *uri, struct strm *t, char *err, size_t errlen)
 {
 	char scheme[32];
-	const struct mm_plugin *p;
-	void *priv, *stream = NULL;
-	struct mm_stream_info info = { 0, 0 };
-
+	void *priv;
+	memset(t, 0, sizeof(*t));
 	uri_scheme(uri, scheme, sizeof(scheme));
-	if (loader_find_source(scheme, &p, &priv) != 0) {
+	if (loader_find_source(scheme, &t->src_p, &priv) != 0) {
 		snprintf(err, errlen, "no source for '%s:'", scheme);
 		return -1;
 	}
+	if (t->src_p->source->open(priv, uri, &t->stream, &t->info) != 0 || !t->stream) {
+		snprintf(err, errlen, "%s could not open %s", t->src_p->name, uri);
+		memset(t, 0, sizeof(*t));
+		return -1;
+	}
+	snprintf(t->uri, sizeof(t->uri), "%s", uri);
+	if (++P.item_seq == 0) P.item_seq = 1;
+	t->item = P.item_seq;
+	return 0;
+}
 
+int player_play(const char *uri, char *err, size_t errlen)
+{
+	struct strm t;
 	pthread_mutex_lock(&P.lock);
 	if (!P.inited) {
 		pthread_mutex_unlock(&P.lock);
@@ -282,36 +348,97 @@ int player_play(const char *uri, char *err, size_t errlen)
 		return -1;
 	}
 	/* Open before stopping what plays, so a bad URI leaves it alone. */
-	if (p->source->open(priv, uri, &stream, &info) != 0 || !stream) {
+	if (open_strm(uri, &t, err, errlen) != 0) {
 		pthread_mutex_unlock(&P.lock);
-		snprintf(err, errlen, "%s could not open %s", p->name, uri);
 		return -1;
 	}
-	close_stream();
+	close_all();
 	flush();
-	P.src_p = p;
-	P.stream = stream;
-	P.info = info;
-	snprintf(P.uri, sizeof(P.uri), "%s", uri);
-	P.item++;
-	if (P.item == 0) P.item = 1;
-	push_start(0);
+	pthread_mutex_lock(&P.slock);
+	P.spk = P.dec = t;
+	pthread_mutex_unlock(&P.slock);
+	atomic_store(&P.dec_frames, 0);
+	push_mark(MM_MARK_START, t.item, 0);
 	atomic_store(&P.paused, 0);
 	int rc = reader_start();
 	if (rc != 0) {
-		close_stream();
+		close_all();
 		snprintf(err, errlen, "could not start reader");
 	}
 	P.state = rc ? PLAYER_STOPPED : PLAYER_PLAYING;
 	pthread_mutex_unlock(&P.lock);
-	if (!rc) LOGI(TAG, "playing %s (%s)", uri, p->name);
+	if (!rc) LOGI(TAG, "playing %s (%s)", uri, t.src_p->name);
 	return rc;
+}
+
+int player_preload(const char *uri, char *err, size_t errlen)
+{
+	struct strm t, old;
+	pthread_mutex_lock(&P.lock);
+	if (P.state == PLAYER_STOPPED) {
+		pthread_mutex_unlock(&P.lock);
+		snprintf(err, errlen, "nothing playing");
+		return -1;
+	}
+	if (open_strm(uri, &t, err, errlen) != 0) {
+		pthread_mutex_unlock(&P.lock);
+		return -1;
+	}
+	pthread_mutex_lock(&P.slock);
+	old = P.nxt;
+	P.nxt = t;
+	pthread_mutex_unlock(&P.slock);
+	strm_close(&old);
+	pthread_mutex_unlock(&P.lock);
+	LOGD(TAG, "preloaded %s", uri);
+	return 0;
+}
+
+void player_drop_preload(void)
+{
+	pthread_mutex_lock(&P.lock);
+	pthread_mutex_lock(&P.slock);
+	struct strm old = P.nxt;
+	memset(&P.nxt, 0, sizeof(P.nxt));
+	pthread_mutex_unlock(&P.slock);
+	strm_close(&old);
+	P.next_asked = 0;
+	pthread_mutex_unlock(&P.lock);
+}
+
+int player_preload_state(void)
+{
+	pthread_mutex_lock(&P.slock);
+	int st = P.spk.stream && P.dec.stream != P.spk.stream ? 2 : P.nxt.stream ? 1 : 0;
+	pthread_mutex_unlock(&P.slock);
+	return st;
+}
+
+int player_wants_next(void)
+{
+	int want = 0;
+	pthread_mutex_lock(&P.lock);
+	pthread_mutex_lock(&P.slock);
+	if (P.state != PLAYER_STOPPED && P.dec.stream && P.dec.stream == P.spk.stream &&
+	    !P.nxt.stream && P.next_asked != P.dec.item) {
+		uint64_t dur = P.dec.info.duration_ms;
+		uint64_t at = atomic_load(&P.dec_frames) * 1000u / MM_PCM_RATE;
+		uint64_t window = (uint64_t)config_get_long("host.preload_s", 10) * 1000u;
+		int ended = P.reader_on && atomic_load(&P.reader_done);
+		if (ended || (dur && (at >= dur || dur - at <= window))) {
+			want = 1;
+			P.next_asked = P.dec.item;
+		}
+	}
+	pthread_mutex_unlock(&P.slock);
+	pthread_mutex_unlock(&P.lock);
+	return want;
 }
 
 void player_stop(void)
 {
 	pthread_mutex_lock(&P.lock);
-	close_stream();
+	close_all();
 	flush();
 	atomic_store(&P.cur_item, 0);
 	atomic_store(&P.paused, 0);
@@ -339,35 +466,52 @@ uint64_t player_position_ms(void)
 	return atomic_load(&P.item_frames) * 1000u / MM_PCM_RATE;
 }
 
+/* Seek always applies to the item at the speaker. If the reader is already
+ * into the next item, that read-ahead is discarded and the queue will be
+ * asked for the next item again. */
 int player_seek_ms(int64_t ms, int relative, char *err, size_t errlen)
 {
 	pthread_mutex_lock(&P.lock);
 	int rc = -1;
-	if (P.state == PLAYER_STOPPED || !P.stream) {
+	if (P.state == PLAYER_STOPPED || !P.spk.stream) {
 		snprintf(err, errlen, "nothing playing");
 		goto out;
 	}
-	if (!(P.info.flags & MM_STREAM_SEEKABLE) || !P.src_p->source->seek) {
+	if (!(P.spk.info.flags & MM_STREAM_SEEKABLE) || !P.spk.src_p->source->seek) {
 		snprintf(err, errlen, "not seekable");
 		goto out;
 	}
 	int64_t target = relative ? (int64_t)player_position_ms() + ms : ms;
 	if (target < 0) target = 0;
-	if (P.info.duration_ms && (uint64_t)target > P.info.duration_ms) target = (int64_t)P.info.duration_ms;
+	if (P.spk.info.duration_ms && (uint64_t)target > P.spk.info.duration_ms)
+		target = (int64_t)P.spk.info.duration_ms;
 
 	reader_join();
-	if (P.src_p->source->seek(P.stream, (uint64_t)target) != 0) {
+	pthread_mutex_lock(&P.slock);
+	struct strm ahead = { 0 };
+	if (P.dec.stream != P.spk.stream) {
+		ahead = P.dec;
+		P.dec = P.spk;
+		P.next_asked = 0;
+	}
+	pthread_mutex_unlock(&P.slock);
+	strm_close(&ahead);
+
+	uint64_t from_frames;
+	if (P.spk.src_p->source->seek(P.spk.stream, (uint64_t)target) != 0) {
 		snprintf(err, errlen, "seek failed");
-		/* Keep playing from wherever the source is now. */
-		flush();
-		push_start(atomic_load(&P.item_frames));
-		reader_start();
-		goto out;
+		from_frames = atomic_load(&P.item_frames); /* carry on from wherever it is */
+	} else {
+		from_frames = (uint64_t)target * MM_PCM_RATE / 1000u;
+		rc = 0;
 	}
 	flush();
-	push_start((uint64_t)target * MM_PCM_RATE / 1000u);
-	rc = reader_start();
-	if (rc) snprintf(err, errlen, "could not restart reader");
+	atomic_store(&P.dec_frames, from_frames);
+	push_mark(MM_MARK_START, P.spk.item, from_frames);
+	if (reader_start() != 0) {
+		snprintf(err, errlen, "could not restart reader");
+		rc = -1;
+	}
 out:
 	pthread_mutex_unlock(&P.lock);
 	return rc;
@@ -402,25 +546,54 @@ int player_state(void)
 
 int player_tick(void)
 {
-	int finished = 0;
+	int ev = 0;
 	pthread_mutex_lock(&P.lock);
-	if (P.reader_on && atomic_load(&P.reader_done) &&
-	    atomic_load_explicit(&P.ended_item, memory_order_acquire) == P.item) {
-		LOGI(TAG, "finished %s", P.uri);
-		close_stream();
-		atomic_store(&P.cur_item, 0);
-		P.state = PLAYER_STOPPED;
-		finished = 1;
+
+	/* The speaker reached the item the reader moved on to. */
+	unsigned at_spk = atomic_load_explicit(&P.cur_item, memory_order_relaxed);
+	pthread_mutex_lock(&P.slock);
+	struct strm retired = { 0 };
+	if (P.spk.stream && P.dec.stream != P.spk.stream && at_spk == P.dec.item) {
+		retired = P.spk;
+		P.spk = P.dec;
+		ev |= PLAYER_EV_ADVANCED;
+	}
+	pthread_mutex_unlock(&P.slock);
+	if (ev & PLAYER_EV_ADVANCED) {
+		LOGI(TAG, "now playing %s", P.spk.uri);
+		strm_close(&retired);
+	}
+
+	if (P.reader_on && atomic_load(&P.reader_done) && !atomic_load(&P.reader_stop)) {
+		if (P.nxt.stream && P.spk.stream == P.dec.stream) {
+			/* The reader ran out before the next item was ready (or while a
+			 * boundary was still in flight): continue from here. */
+			reader_join();
+			pthread_mutex_lock(&P.slock);
+			P.dec = P.nxt;
+			memset(&P.nxt, 0, sizeof(P.nxt));
+			pthread_mutex_unlock(&P.slock);
+			atomic_store(&P.dec_frames, 0);
+			push_mark(MM_MARK_START, P.dec.item, 0);
+			reader_start();
+		} else if (!P.nxt.stream && P.spk.stream == P.dec.stream &&
+		           atomic_load_explicit(&P.ended_item, memory_order_acquire) == P.dec.item) {
+			LOGI(TAG, "finished %s", P.spk.uri);
+			close_all();
+			atomic_store(&P.cur_item, 0);
+			P.state = PLAYER_STOPPED;
+			ev |= PLAYER_EV_FINISHED;
+		}
 	}
 	pthread_mutex_unlock(&P.lock);
-	return finished;
+	return ev;
 }
 
 void player_current_uri(char *buf, size_t cap)
 {
-	pthread_mutex_lock(&P.lock);
-	snprintf(buf, cap, "%s", P.uri);
-	pthread_mutex_unlock(&P.lock);
+	pthread_mutex_lock(&P.slock);
+	snprintf(buf, cap, "%s", P.spk.uri);
+	pthread_mutex_unlock(&P.slock);
 }
 
 uint32_t player_buffered_frames(void) { return ring_fill(&P.play); }
@@ -513,19 +686,23 @@ static int v_status(void *priv, struct mm_verb_ctx *c)
 	(void)priv;
 	static const char *const names[] = { "stopped", "playing", "paused" };
 	pthread_mutex_lock(&P.lock);
+	pthread_mutex_lock(&P.slock);
+	const struct strm *k = &P.spk;
+	const char *next = P.dec.stream != P.spk.stream ? P.dec.uri : P.nxt.stream ? P.nxt.uri : "-";
 	uint64_t pos = player_position_ms();
 	char dur[32] = "-";
-	if (P.info.duration_ms)
-		snprintf(dur, sizeof(dur), "%.3f", (double)P.info.duration_ms / 1000.0);
+	if (k->info.duration_ms)
+		snprintf(dur, sizeof(dur), "%.3f", (double)k->info.duration_ms / 1000.0);
 	snprintf(c->reply, c->reply_len,
 	         "state: %s\nuri: %s\nsource: %s\nposition: %.3f\nduration: %s\nseekable: %s\n"
-	         "volume: %d\nsink: %s\nbuffered: %.3f\nunderruns: %" PRIu64 "\n",
-	         names[P.state], P.uri[0] ? P.uri : "-", P.src_p ? P.src_p->name : "-",
+	         "next: %s\nvolume: %d\nsink: %s\nbuffered: %.3f\nunderruns: %" PRIu64 "\n",
+	         names[P.state], k->uri[0] ? k->uri : "-", k->src_p ? k->src_p->name : "-",
 	         (double)pos / 1000.0, dur,
-	         (P.info.flags & MM_STREAM_SEEKABLE) ? "yes" : "no",
+	         (k->info.flags & MM_STREAM_SEEKABLE) ? "yes" : "no", next,
 	         P.vol, P.sink_p ? P.sink_p->name : "-",
 	         (double)ring_fill(&P.play) / MM_PCM_RATE,
 	         (uint64_t)atomic_load(&P.underruns));
+	pthread_mutex_unlock(&P.slock);
 	pthread_mutex_unlock(&P.lock);
 	return MM_REPLY_RAW;
 }
@@ -603,7 +780,7 @@ void player_fini(void)
 		pthread_mutex_unlock(&P.lock);
 		return;
 	}
-	close_stream();
+	close_all();
 	P.state = PLAYER_STOPPED;
 	P.inited = 0;
 	pthread_mutex_unlock(&P.lock);

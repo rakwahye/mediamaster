@@ -61,6 +61,7 @@ struct mm_mark {
 	uint64_t offset; /* START: frames into the item (non-zero after a seek) */
 	uint32_t item;
 	uint32_t kind;
+	uint32_t gen;    /* owner's flush generation when pushed */
 };
 
 #define MM_MARKQ_CAP 64u

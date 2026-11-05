@@ -24,7 +24,20 @@ static struct {
 	size_t n, cap;
 	long cur;         /* 0-based index; -1 = none */
 	int cur_removed;  /* the item at `cur` was deleted; cur now names its successor */
+	long pre;         /* index handed to the player as the next item */
+	int pre_valid;
+	int pre_removed;  /* like cur_removed, for pre */
 } Q = { .lock = PTHREAD_MUTEX_INITIALIZER, .cur = -1 };
+
+/* The list changed. A preload the reader has not started on is stale:
+ * drop it, and the player will ask again. One it already reads from
+ * plays on, and `pre` keeps tracking it. */
+static void edited(void)
+{
+	if (Q.pre_valid && player_preload_state() == 2) return;
+	player_drop_preload();
+	Q.pre_valid = 0;
+}
 
 /* ------------------------------------------------------------------ storage (lock held) */
 
@@ -44,6 +57,7 @@ static int insert_at(size_t i, const char *uri)
 	Q.uri[i] = d;
 	Q.n++;
 	if (Q.cur >= 0 && (long)i <= Q.cur && !(Q.cur_removed && (long)i == Q.cur)) Q.cur++;
+	if (Q.pre_valid && (long)i <= Q.pre && !(Q.pre_removed && (long)i == Q.pre)) Q.pre++;
 	return 0;
 }
 
@@ -57,6 +71,7 @@ static int play_index(long i, char *err, size_t errlen)
 	if (player_play(Q.uri[i], err, errlen) != 0) return -1;
 	Q.cur = i;
 	Q.cur_removed = 0;
+	Q.pre_valid = 0; /* player_play dropped any preload */
 	return 0;
 }
 
@@ -80,6 +95,7 @@ long queue_add(const char *uri)
 {
 	pthread_mutex_lock(&Q.lock);
 	long pos = insert_at(Q.n, uri) == 0 ? (long)Q.n : -1;
+	if (pos > 0) edited();
 	pthread_mutex_unlock(&Q.lock);
 	return pos;
 }
@@ -99,6 +115,8 @@ int queue_play_uri(const char *uri, char *err, size_t errlen)
 		memmove(Q.uri + at, Q.uri + at + 1, (Q.n - at - 1) * sizeof(*Q.uri));
 		Q.n--;
 		if (Q.cur > (long)at) Q.cur--;
+		if (Q.pre_valid && Q.pre > (long)at) Q.pre--;
+		edited();
 	}
 	pthread_mutex_unlock(&Q.lock);
 	return rc;
@@ -160,6 +178,11 @@ int queue_remove(long pos)
 		Q.n--;
 		if ((long)i < Q.cur) Q.cur--;
 		else if ((long)i == Q.cur) Q.cur_removed = 1;
+		if (Q.pre_valid) {
+			if ((long)i < Q.pre) Q.pre--;
+			else if ((long)i == Q.pre) Q.pre_removed = 1;
+		}
+		edited();
 		rc = 0;
 	}
 	pthread_mutex_unlock(&Q.lock);
@@ -173,6 +196,8 @@ void queue_clear(void)
 	Q.n = 0;
 	Q.cur = -1;
 	Q.cur_removed = 0;
+	if (Q.pre_valid) { Q.pre = 0; Q.pre_removed = 1; }
+	edited();
 	pthread_mutex_unlock(&Q.lock);
 }
 
@@ -192,16 +217,59 @@ long queue_cursor(void)
 	return c;
 }
 
+/* Lock held. Give the player the next item that opens, after the cursor. */
+static void preload_next(void)
+{
+	long i = Q.cur < 0 ? 0 : Q.cur + (Q.cur_removed ? 0 : 1);
+	char err[256];
+	for (; (size_t)i < Q.n; i++) {
+		if (player_preload(Q.uri[i], err, sizeof(err)) == 0) {
+			Q.pre = i;
+			Q.pre_valid = 1;
+			Q.pre_removed = 0;
+			return;
+		}
+		LOGW(TAG, "skipping %ld (%s): %s", i + 1, Q.uri[i], err);
+	}
+}
+
+static void on_advanced(void)
+{
+	if (!Q.pre_valid) return;
+	Q.cur = Q.pre;
+	Q.cur_removed = Q.pre_removed;
+	Q.pre_valid = 0;
+}
+
+static void on_finished_locked(void);
+
+int queue_tick(void)
+{
+	int ev = player_tick();
+	pthread_mutex_lock(&Q.lock);
+	if (ev & PLAYER_EV_ADVANCED) on_advanced();
+	if (ev & PLAYER_EV_FINISHED) on_finished_locked();
+	if (player_wants_next()) preload_next();
+	pthread_mutex_unlock(&Q.lock);
+	return ev;
+}
+
 void queue_on_finished(void)
 {
 	pthread_mutex_lock(&Q.lock);
+	on_finished_locked();
+	pthread_mutex_unlock(&Q.lock);
+}
+
+static void on_finished_locked(void)
+{
+	Q.pre_valid = 0;
 	long i = Q.cur < 0 ? 0 : Q.cur + (Q.cur_removed ? 0 : 1);
 	if ((size_t)i < Q.n) {
 		if (play_from(i, 1) != 0) LOGI(TAG, "nothing playable left in the queue");
 	} else if (Q.n) {
 		LOGI(TAG, "end of queue");
 	}
-	pthread_mutex_unlock(&Q.lock);
 }
 
 void queue_list(char *buf, size_t cap)

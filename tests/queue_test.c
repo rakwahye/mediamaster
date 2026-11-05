@@ -39,10 +39,7 @@ static int finish_current(void)
 	snprintf(was, sizeof(was), "%s", now());
 	for (int i = 0; i < 3000; i++) {
 		s_pull(s_ctx, s_buf, 480);
-		if (player_tick()) {
-			queue_on_finished();
-			return 0;
-		}
+		if (queue_tick() & (PLAYER_EV_ADVANCED | PLAYER_EV_FINISHED)) return 0;
 		struct timespec ts = { 0, 500000 };
 		nanosleep(&ts, NULL);
 	}
@@ -144,6 +141,78 @@ static int editing(void)
 	return 0;
 }
 
+static int gapless(void)
+{
+	char err[128];
+	static float all[MM_PCM_CHANNELS * 48000];
+	queue_clear();
+	queue_add("sine:100:0.05");
+	queue_add("sine:-1");        /* skipped at preload time */
+	queue_add("sine:200:0.05");
+	queue_add("sine:300:0.05");
+	uint64_t base = player_underruns();
+	CHECK(queue_play_at(1, err, sizeof(err)) == 0, "start");
+
+	size_t got = 0;
+	int advanced = 0, finished = 0;
+	for (int i = 0; i < 3000 && !finished; i++) {
+		s_pull(s_ctx, s_buf, 480);
+		if (got + 480 <= sizeof(all) / sizeof(all[0]) / MM_PCM_CHANNELS) {
+			memcpy(all + got * MM_PCM_CHANNELS, s_buf, sizeof(float) * MM_PCM_CHANNELS * 480);
+			got += 480;
+		}
+		int ev = queue_tick();
+		if (ev & PLAYER_EV_ADVANCED) {
+			advanced++;
+			if (advanced == 1) CHECK(queue_cursor() == 3 && !strcmp(now(), "sine:200:0.05"), "the cursor jumps over the skipped item when the speaker gets there");
+		}
+		if (ev & PLAYER_EV_FINISHED) finished = 1;
+		struct timespec ts = { 0, 300000 };
+		nanosleep(&ts, NULL);
+	}
+	CHECK(finished && advanced == 2, "two gapless advances, then the end");
+	CHECK(queue_cursor() == 4, "the cursor ends on the last item");
+
+	long first = -1, last = -1, run = 0, worst = 0;
+	for (size_t f = 0; f < got; f++) {
+		if (all[f * MM_PCM_CHANNELS] != 0.0f) { if (first < 0) first = (long)f; last = (long)f; }
+	}
+	for (long f = first; f <= last; f++) {
+		run = all[f * MM_PCM_CHANNELS] == 0.0f ? run + 1 : 0;
+		if (run > worst) worst = run;
+	}
+	CHECK(last - first + 2 == 3 * 2400, "three 2400-frame tones span exactly 7200 frames");
+	CHECK(worst <= 1, "no silence between items (a lone zero is a tone's first sample)");
+	CHECK(player_underruns() == base, "no underruns");
+	return 0;
+}
+
+static int edits_drop_preload(void)
+{
+	char err[128];
+	queue_clear();
+	queue_add("sine:100:5");
+	CHECK(queue_play_at(1, err, sizeof(err)) == 0, "a 5 s item, nothing after it");
+	for (int i = 0; i < 5; i++) { s_pull(s_ctx, s_buf, 480); queue_tick(); }
+	CHECK(player_preload_state() == 0, "nothing to preload yet");
+	queue_add("sine:200:5");
+	queue_tick();
+	CHECK(player_preload_state() == 1, "adding an item gets it preloaded");
+	queue_play_uri("sine:150:5", err, sizeof(err));
+	queue_tick();
+	queue_tick();
+	CHECK(player_preload_state() == 1, "after an insert the preload is redone");
+	char st[1024];
+	queue_list(st, sizeof(st));
+	CHECK(strstr(st, "> 2  sine:150:5\n  3  sine:200:5\n") != NULL, "it is the item now after the cursor");
+	queue_remove(3);
+	CHECK(player_preload_state() == 0, "removing the preloaded item drops it");
+	queue_tick();
+	CHECK(player_preload_state() == 0, "and with nothing left after the cursor nothing is preloaded");
+	player_stop();
+	return 0;
+}
+
 static int verbs(void)
 {
 	CHECK(ipc_has_verb("play") && ipc_has_verb("next") && ipc_has_verb("prev") && ipc_has_verb("queue"), "queue verbs registered");
@@ -164,6 +233,8 @@ int main(void)
 	RUN(basics);
 	RUN(skipping);
 	RUN(editing);
+	RUN(gapless);
+	RUN(edits_drop_preload);
 
 	queue_fini();
 	CHECK(!ipc_has_verb("queue"), "fini drops the verbs");

@@ -22,6 +22,7 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static long g_allow;
 static int g_intr;
+static int g_end;   /* once the allowance is used up, report end of stream */
 
 static void gate_allow(long frames)
 {
@@ -37,6 +38,7 @@ static int gate_open(void *priv, const char *uri, void **st, struct mm_stream_in
 	pthread_mutex_lock(&g_mu);
 	g_allow = 0;
 	g_intr = 0;
+	g_end = 0;
 	pthread_mutex_unlock(&g_mu);
 	in->duration_ms = 0;
 	in->flags = MM_STREAM_LIVE;
@@ -47,7 +49,7 @@ static long gate_read(void *st, float *dst, uint32_t frames)
 {
 	(void)st;
 	pthread_mutex_lock(&g_mu);
-	while (!g_allow && !g_intr) pthread_cond_wait(&g_cv, &g_mu);
+	while (!g_allow && !g_intr && !g_end) pthread_cond_wait(&g_cv, &g_mu);
 	long n = 0;
 	if (!g_intr) {
 		n = g_allow < (long)frames ? g_allow : (long)frames;
@@ -58,6 +60,14 @@ static long gate_read(void *st, float *dst, uint32_t frames)
 	for (long i = 0; i < n * (long)MM_PCM_CHANNELS; i++) dst[i] = 0.5f;
 	return n;
 }
+static void gate_end(void)
+{
+	pthread_mutex_lock(&g_mu);
+	g_end = 1;
+	pthread_cond_broadcast(&g_cv);
+	pthread_mutex_unlock(&g_mu);
+}
+
 static void gate_interrupt(void *st)
 {
 	(void)st;
@@ -274,6 +284,104 @@ static int underruns(void)
 	return 0;
 }
 
+/* A fixture of `frames` frames whose every sample is distinct. */
+static void write_ramp(const char *path, unsigned frames, float *out)
+{
+	FILE *f = fopen(path, "wb");
+	for (unsigned i = 0; i < CH * frames; i++) out[i] = 0.25f + (float)i / (8.0f * CH * frames);
+	fwrite(out, sizeof(float), CH * frames, f);
+	fclose(f);
+}
+
+static int wait_reader_done_into(int want_state)
+{
+	for (int i = 0; i < 2000; i++) {
+		if (player_preload_state() == want_state) return 0;
+		struct timespec ts = { 0, 1000000 };
+		nanosleep(&ts, NULL);
+	}
+	return -1;
+}
+
+static int gapless(void)
+{
+	char err[128], path[64], uri[96], cur[128];
+	static float ramp[CH * 3000];
+	snprintf(path, sizeof(path), "/tmp/mm-gapless-test.%d.f32", (int)getpid());
+	write_ramp(path, 3000, ramp);
+	snprintf(uri, sizeof(uri), "raw:%s", path);
+	uint64_t base = player_underruns();
+
+	/* In-reader hand-off: the next item is ready before the first ends. */
+	CHECK(player_preload(uri, err, sizeof(err)) != 0, "preload needs something playing");
+	CHECK(player_play("gate:", err, sizeof(err)) == 0, "first item");
+	gate_allow(960);
+	CHECK(player_preload(uri, err, sizeof(err)) == 0 && player_preload_state() == 1, "preload while playing");
+	gate_end();
+	CHECK(wait_reader_done_into(2) == 0, "the reader moves into the preloaded item on its own");
+	CHECK(wait_buffered(960 + 3000) == 0, "both items are queued back to back");
+
+	pull(480);
+	CHECK(player_tick() == 0, "no advance before the speaker reaches the boundary");
+	player_current_uri(cur, sizeof(cur));
+	CHECK(!strcmp(cur, "gate:"), "status still names the item at the speaker");
+
+	pull(480 + 3000);
+	CHECK(s_buf[479 * CH] == 0.5f && !memcmp(s_buf + 480 * CH, ramp, sizeof(ramp)),
+	      "the second item follows the first's last frame with nothing between");
+	CHECK(player_underruns() == base, "no underrun at the boundary");
+	CHECK(player_tick() == PLAYER_EV_ADVANCED, "the tick reports the speaker crossing");
+	player_current_uri(cur, sizeof(cur));
+	CHECK(!strcmp(cur, uri) && player_position_ms() == 62, "status and position belong to the new item");
+	CHECK(player_preload_state() == 0, "the slot is free for the item after");
+	CHECK(run_to_stop() == 0, "with nothing preloaded the last item finishes and playback stops");
+
+	/* Late preload: the reader ran dry first; the tick picks it up. */
+	CHECK(player_play("gate:", err, sizeof(err)) == 0, "first item");
+	gate_allow(480);
+	gate_end();
+	CHECK(wait_buffered(480) == 0, "queued");
+	struct timespec ts = { 0, 20 * 1000 * 1000 };
+	nanosleep(&ts, NULL);
+	CHECK(player_wants_next() == 1, "an item that ended with nothing after it asks for the next");
+	CHECK(player_wants_next() == 0, "and asks only once");
+	CHECK(player_preload(uri, err, sizeof(err)) == 0, "late preload");
+	CHECK(player_tick() == 0 && player_state() == PLAYER_PLAYING, "the tick continues into it instead of finishing");
+	CHECK(wait_buffered(480 + 3000) == 0, "queued behind the first");
+	pull(480 + 3000);
+	CHECK(!memcmp(s_buf + 480 * CH, ramp, sizeof(ramp)), "still contiguous: the speaker had not run dry");
+	CHECK(player_tick() == PLAYER_EV_ADVANCED, "advance");
+	player_stop();
+
+	/* Seek while the reader is already in the next item. */
+	CHECK(player_play("sine:1000:0.5", err, sizeof(err)) == 0, "a short tone");
+	CHECK(player_preload(uri, err, sizeof(err)) == 0, "preload");
+	CHECK(player_tick() == 0, "tick (continues into the preload if the reader already ran dry)");
+	CHECK(wait_reader_done_into(2) == 0, "the reader is in the next item, the speaker is not");
+	CHECK(player_seek_ms(200, 0, err, sizeof(err)) == 0, "seek the item at the speaker");
+	CHECK(player_preload_state() == 0, "the read-ahead into the next item is dropped");
+	pull(0);
+	CHECK(wait_buffered(480) == 0, "queued");
+	pull(480);
+	CHECK(near(s_buf[0], AMP * sin(W * 9600)) && player_position_ms() == 210, "the seek landed in the first item");
+	CHECK(player_wants_next() == 1, "and the next item is asked for again");
+	player_stop();
+
+	/* When to ask. */
+	config_override("host.preload_s=10");
+	config_reload();
+	CHECK(player_play("sine:1000:30", err, sizeof(err)) == 0 && wait_buffered(4800) == 0, "a 30 s tone");
+	CHECK(player_wants_next() == 0, "far from the end: not yet");
+	player_stop();
+	CHECK(player_play("sine:1000", err, sizeof(err)) == 0 && wait_buffered(4800) == 0, "an endless tone");
+	CHECK(player_wants_next() == 0, "a live stream never asks");
+	player_stop();
+	CHECK(player_wants_next() == 0, "stopped: never");
+
+	unlink(path);
+	return 0;
+}
+
 int main(void)
 {
 	config_override("host.sink=badsink, testsink");
@@ -293,6 +401,7 @@ int main(void)
 	RUN(seeking);
 	RUN(replace_and_files);
 	RUN(underruns);
+	RUN(gapless);
 
 	player_fini();
 	CHECK(s_stopped == 1, "fini stops the sink");

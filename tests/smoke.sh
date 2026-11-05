@@ -118,17 +118,23 @@ fi
 
 # the queue: two tones play back to back, then playback stops
 "$MMCTL" queue clear >/dev/null
-"$MMCTL" queue add sine:220:0.3 sine:440:0.3 sine:660:0.3 | grep -qx 'ok added 1-3' || fail "queue add"
+"$MMCTL" queue add sine:220:0.3 sine:440:1 sine:660:0.3 | grep -qx 'ok added 1-3' || fail "queue add"
 "$MMCTL" queue | grep -q '^  3  sine:660:0.3$' || fail "queue list"
 "$MMCTL" queue rm 1 >/dev/null || fail "queue rm"
 "$MMCTL" null reset >/dev/null
-"$MMCTL" play | grep -q '^ok playing sine:440:0.3' || fail "play starts the queue"
+"$MMCTL" play | grep -q '^ok playing sine:440:1' || fail "play starts the queue"
+i=0
+until [ "$(field next)" = sine:660:0.3 ]; do
+	i=$((i + 1)); [ $i -lt 8 ] || fail "the second tone was not preloaded"
+	sleep 0.05
+done
 wait_state stopped 40
 "$MMCTL" queue | grep -q '^> 2  sine:660:0.3$' || fail "the queue did not advance to the second tone"
+[ "$(field underruns)" = 0 ] || fail "gapless hand-off underran"
 loud=$("$MMCTL" null | sed -n 's/.*nonsilent=\([0-9]*\).*/\1/p')
-[ "$loud" -ge 28000 ] || fail "expected ~28800 audible frames from two tones, got $loud"
+[ "$loud" -ge 61000 ] || fail "expected ~62400 audible frames from two tones, got $loud"
 if "$MMCTL" next >/dev/null 2>&1; then fail "next past the end should fail"; fi
-"$MMCTL" prev | grep -q '^ok playing 1: sine:440:0.3' || fail "prev"
+"$MMCTL" prev | grep -q '^ok playing 1: sine:440:1' || fail "prev"
 "$MMCTL" stop >/dev/null
 
 # reload is acknowledged and performed
