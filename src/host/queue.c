@@ -356,6 +356,15 @@ static int v_play(void *priv, struct mm_verb_ctx *c)
 	} else {
 		char uri[2048], **v;
 		join_args(c->argc, c->argv, 1, uri, sizeof(uri));
+		/* Words, not a URI or a path: the first track a search finds. */
+		if (catalog_is_query(uri)) {
+			char hit[2048];
+			if (catalog_first_hit(uri, hit, sizeof(hit), err, sizeof(err)) != 0) {
+				snprintf(c->reply, c->reply_len, "%s", err);
+				return MM_ERR;
+			}
+			snprintf(uri, sizeof(uri), "%s", hit);
+		}
 		long n = catalog_tracks(uri, &v, QUEUE_MAX, err, sizeof(err));
 		int rc = n < 0 ? -1 : queue_play_list(v, (size_t)n, err, sizeof(err));
 		if (n >= 0) catalog_free(v, n);
@@ -455,7 +464,7 @@ static int v_queue(void *priv, struct mm_verb_ctx *c)
 int queue_init(void)
 {
 	int rc = 0;
-	rc |= ipc_register("queue", "play", "[uri]\tplay a URI now (inserted after the current item), or resume/start the queue", v_play, NULL);
+	rc |= ipc_register("queue", "play", "[uri|words]\tplay a URI, or the first search hit, now (after the current item); or resume/start the queue", v_play, NULL);
 	rc |= ipc_register("queue", "next", "\tnext item in the queue", v_next, NULL);
 	rc |= ipc_register("queue", "prev", "\tprevious item in the queue", v_prev, NULL);
 	rc |= ipc_register("queue", "queue", "[list|add <uri>...|rm <n>|clear|play <n>]\tthe play queue", v_queue, NULL);

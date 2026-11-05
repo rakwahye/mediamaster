@@ -21,7 +21,15 @@ int catalog_list(const char *uri, uint32_t flags, mm_item_fn emit, void *ctx, ch
 long catalog_tracks(const char *uri, char ***out, long max, char *err, size_t errlen);
 void catalog_free(char **v, long n);
 
-/** Register `browse`. */
+/** 1 if `text` is words to search for rather than a URI or a path: it
+ * is not a path, and no plugin claims the scheme it seems to have. */
+int catalog_is_query(const char *text);
+
+/** The first track any catalog finds for `query`, into uri.
+ * @returns 0, or -1 with err set. */
+int catalog_first_hit(const char *query, char *uri, size_t cap, char *err, size_t errlen);
+
+/** Register `browse` and `search`. */
 int catalog_init(void);
 
 #endif

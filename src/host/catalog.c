@@ -7,6 +7,7 @@
  * stops at MAX_DEPTH, which also ends any cycle. */
 
 #include "catalog.h"
+#include "config.h"
 #include "ipc.h"
 #include "loader.h"
 #include "log.h"
@@ -185,9 +186,106 @@ static int v_browse(void *priv, struct mm_verb_ctx *c)
 	return MM_REPLY_RAW;
 }
 
+/* ------------------------------------------------------------------ search
+ *
+ * Every catalog is asked for "<scheme>:search:<words>", in load order; a
+ * catalog that cannot search answers with an error or MM_NOT_A_LIST and
+ * is passed over. Each gives at most catalog.search_max results. */
+
+int catalog_is_query(const char *text)
+{
+	char scheme[32];
+	const struct mm_plugin *p;
+	void *priv;
+	if (!text[0] || text[0] == '/') return 0;
+	uri_scheme(text, scheme, sizeof(scheme));
+	if (!strcmp(scheme, "file")) return strncmp(text, "file:", 5) != 0; /* bare words */
+	return loader_find_source(scheme, &p, &priv) != 0 && loader_find_catalog(scheme, &p, &priv) != 0;
+}
+
+static long search_max(void)
+{
+	const char *v = config_get("catalog.search_max");
+	long n = v ? strtol(v, NULL, 10) : 0;
+	return n > 0 ? n : 20;
+}
+
+struct search {
+	const char *query;
+	mm_item_fn emit;
+	void *ctx;
+	long left, max;
+	int stop, sources;
+};
+
+static int counted(void *ctx, const struct mm_item *it)
+{
+	struct search *s = ctx;
+	if (s->left <= 0) return 1;
+	s->left--;
+	s->stop = s->emit(s->ctx, it) != 0;
+	return s->stop || s->left <= 0;
+}
+
+static void search_one(void *ctx, const char *scheme, const char *name)
+{
+	struct search *s = ctx;
+	char uri[1024], err[256];
+	if (s->stop) return;
+	snprintf(uri, sizeof(uri), "%s:search:%s", scheme, s->query);
+	s->left = s->max;
+	int rc = catalog_list(uri, 0, counted, s, err, sizeof(err));
+	if (rc == 0) s->sources++;
+	else if (rc != MM_NOT_A_LIST) LOGD(TAG, "%s: no search: %s", name, err);
+}
+
+static int v_search(void *priv, struct mm_verb_ctx *c)
+{
+	(void)priv;
+	char q[1024];
+	size_t off = 0;
+	q[0] = '\0';
+	for (int i = 1; i < c->argc && off < sizeof(q); i++)
+		off += (size_t)snprintf(q + off, sizeof(q) - off, "%s%s", i > 1 ? " " : "", c->argv[i]);
+	if (!q[0]) {
+		snprintf(c->reply, c->reply_len, "usage: search <words>");
+		return MM_ERR;
+	}
+	struct out o = { c->reply, c->reply_len, 0, 0, 0 };
+	struct search s = { q, print_item, &o, 0, search_max(), 0, 0 };
+	c->reply[0] = '\0';
+	loader_each_catalog(search_one, &s);
+	if (!o.n) snprintf(c->reply, c->reply_len, "no results\n");
+	return MM_REPLY_RAW;
+}
+
+struct first { char *uri; size_t cap; int found; };
+
+static int take_first(void *ctx, const struct mm_item *it)
+{
+	struct first *f = ctx;
+	if (it->kind != MM_ITEM_TRACK || !it->uri) return 0; /* the first track, not a list */
+	snprintf(f->uri, f->cap, "%s", it->uri);
+	f->found = 1;
+	return 1;
+}
+
+int catalog_first_hit(const char *query, char *uri, size_t cap, char *err, size_t errlen)
+{
+	struct first f = { uri, cap, 0 };
+	struct search s = { query, take_first, &f, 0, search_max(), 0, 0 };
+	loader_each_catalog(search_one, &s);
+	if (f.found) return 0;
+	snprintf(err, errlen, "nothing found for '%s'", query);
+	return -1;
+}
+
 int catalog_init(void)
 {
-	return ipc_register("catalog", "browse",
-	                    "<uri>\twhat is inside a playlist, album, folder (<scheme>: for the top)",
-	                    v_browse, NULL);
+	int rc = ipc_register("catalog", "browse",
+	                      "<uri>\twhat is inside a playlist, album, folder (<scheme>: for the top)",
+	                      v_browse, NULL);
+	rc |= ipc_register("catalog", "search", "<words>\tsearch every source; play <words> plays the first hit",
+	                   v_search, NULL);
+	return rc;
 }

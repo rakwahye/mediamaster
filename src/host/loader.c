@@ -288,6 +288,22 @@ int loader_find_catalog(const char *scheme, const struct mm_plugin **p, void **p
 	return -1;
 }
 
+void loader_each_catalog(void (*fn)(void *ctx, const char *scheme, const char *name), void *ctx)
+{
+	for (size_t i = 0; i < s_n; i++) {
+		const struct slot *s = &s_slots[i];
+		if (s->state != MM_PLUGIN_ACTIVE || !s->p->catalog || !s->p->catalog->list || !s->p->schemes) continue;
+		char scheme[32];
+		const char *p = s->p->schemes;
+		while (*p == ',' || *p == ' ' || *p == '\t') p++;
+		size_t n = strcspn(p, ", \t");
+		if (!n || n >= sizeof(scheme)) continue;
+		memcpy(scheme, p, n);
+		scheme[n] = '\0';
+		fn(ctx, scheme, s->p->name);
+	}
+}
+
 int loader_find_sink(const char *name, const struct mm_plugin **p, void **priv)
 {
 	for (size_t i = 0; i < s_n; i++) {

@@ -16,7 +16,9 @@
  *
  * Folders are lists (catalog): `browse`, `queue add` and `play` of a
  * folder take the audio files in it and in its subfolders, in natural
- * order (2 before 10); "file:" alone is the music folder.
+ * order (2 before 10); "file:" alone is the music folder, and
+ * "file:search:<words>" finds audio files under it whose path holds every
+ * word, in any case and order.
  *
  * Children get an empty signal mask and default dispositions (the daemon
  * blocks its signals for signalfd), /dev/null on stdin, and nothing else
@@ -548,6 +550,78 @@ static int visible(const struct dirent *d)
 	return d->d_name[0] != '.';
 }
 
+static void music_dir(const struct ff_priv *p, char *dir, size_t cap)
+{
+	const char *home = getenv("HOME");
+	const char *music = p->h->config_get(p->h, "music_dir");
+	if (music && *music) snprintf(dir, cap, "%s", music);
+	else snprintf(dir, cap, "%s/Music", home ? home : "");
+}
+
+/* Lower-case ASCII copy; other bytes (UTF-8) compare as they are. */
+static void lower(const char *in, char *out, size_t cap)
+{
+	size_t i = 0;
+	for (; in[i] && i + 1 < cap; i++) out[i] = (in[i] >= 'A' && in[i] <= 'Z') ? (char)(in[i] + 32) : in[i];
+	out[i] = '\0';
+}
+
+struct finder {
+	char words[16][128];
+	int nwords;
+	size_t root_len;
+	mm_item_fn emit;
+	void *ctx;
+	int stop;
+};
+
+static void find_in(struct finder *f, const char *dir, int depth)
+{
+	struct dirent **ents;
+	int n = scandir(dir, &ents, visible, versionsort);
+	if (n < 0) return;
+	for (int i = 0; i < n; i++) {
+		char path[4096], rel[4096];
+		struct stat st;
+		if (f->stop || snprintf(path, sizeof(path), "%s/%s", dir, ents[i]->d_name) >= (int)sizeof(path) ||
+		    stat(path, &st) != 0) {
+			free(ents[i]);
+			continue;
+		}
+		if (S_ISDIR(st.st_mode)) {
+			if (depth < 12) find_in(f, path, depth + 1);
+		} else if (S_ISREG(st.st_mode) && audio_name(ents[i]->d_name)) {
+			int all = 1;
+			lower(path + f->root_len, rel, sizeof(rel));
+			for (int w = 0; w < f->nwords && all; w++) all = strstr(rel, f->words[w]) != NULL;
+			if (all) {
+				struct mm_item it = { MM_ITEM_TRACK, path, ents[i]->d_name, NULL, NULL, 0 };
+				f->stop = f->emit(f->ctx, &it) != 0;
+			}
+		}
+		free(ents[i]);
+	}
+	free(ents);
+}
+
+static int file_search(const struct ff_priv *p, const char *q, mm_item_fn emit, void *ctx)
+{
+	struct finder f;
+	char dir[4096], low[1024];
+	memset(&f, 0, sizeof(f));
+	f.emit = emit;
+	f.ctx = ctx;
+	lower(q, low, sizeof(low));
+	char *save = NULL;
+	for (char *w = strtok_r(low, " \t", &save); w && f.nwords < 16; w = strtok_r(NULL, " \t", &save))
+		snprintf(f.words[f.nwords++], sizeof(f.words[0]), "%s", w);
+	if (!f.nwords) return 0;
+	music_dir(p, dir, sizeof(dir));
+	f.root_len = strlen(dir);
+	find_in(&f, dir, 0);
+	return 0;
+}
+
 static int ff_list(void *priv, const char *uri, uint32_t flags, mm_item_fn emit, void *ctx,
                    char *err, size_t errlen)
 {
@@ -556,11 +630,9 @@ static int ff_list(void *priv, const char *uri, uint32_t flags, mm_item_fn emit,
 	char input[4096], dir[4096];
 	int is_net;
 
+	if (!strncmp(uri, "file:search:", 12)) return file_search(p, uri + 12, emit, ctx);
 	if (!strcmp(uri, "file:") || !strcmp(uri, "file://")) {
-		const char *home = getenv("HOME");
-		const char *music = p->h->config_get(p->h, "music_dir");
-		if (music && *music) snprintf(dir, sizeof(dir), "%s", music);
-		else snprintf(dir, sizeof(dir), "%s/Music", home ? home : "");
+		music_dir(p, dir, sizeof(dir));
 	} else {
 		if (uri_to_input(uri, input, sizeof(input), &is_net) != 0) {
 			snprintf(err, errlen, "not a usable path or URL: %s", uri);

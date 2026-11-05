@@ -51,7 +51,7 @@ start
 "$MMCTL" plugins | grep -q '^raw .*active.*ifaces=source.*builtin' || fail "builtin raw source not active"
 [ "$(field sink)" = null ] || fail "host.sink not honoured"
 if "$MMCTL" nosuch >/dev/null 2>&1; then fail "unknown verb should exit 1"; fi
-"$MMCTL" help | grep -q 'play \[uri\]' || fail "help lists playback verbs"
+"$MMCTL" help | grep -q 'play \[uri|words\]' || fail "help lists playback verbs"
 grep -q "already provided by builtin" "$T/log" || fail "duplicate .so not reported"
 
 # a half-second tone, played to the end through the daemon
@@ -139,6 +139,12 @@ if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
 	"$MMCTL" queue add "$A" | grep -qx 'ok added 1-3' || fail "queue add of a folder"
 	"$MMCTL" queue | sed -n 's/^.. *[0-9]*  //p' | tr '\n' '|' |
 		grep -qx "$A/CD2/1 a.flac|$A/2 two.flac|$A/10 ten.FLAC|" || fail "folder order: $("$MMCTL" queue)"
+	"$MMCTL" search TWO | grep -qx "track	$A/2 two.flac	2 two.flac	-	-	-" || fail "search: $("$MMCTL" search TWO)"
+	"$MMCTL" search album cd2 | cut -f2 | grep -qx "$A/CD2/1 a.flac" || fail "search: every word, in the path"
+	"$MMCTL" search zzz | grep -qx "no results" || fail "search without hits"
+	"$MMCTL" queue clear >/dev/null
+	"$MMCTL" play ten flac | grep -q "^ok playing $A/10 ten.FLAC" || fail "play <words>"
+	"$MMCTL" stop >/dev/null
 	"$MMCTL" queue clear >/dev/null
 	"$MMCTL" play "$A/CD2" | grep -q "^ok playing $A/CD2/1 a.flac" || fail "play of a folder"
 	"$MMCTL" stop >/dev/null

@@ -34,7 +34,8 @@ static float s_buf[MM_PCM_CHANNELS * 4800];
  *   box:loop        contains itself
  *   box:empty       nothing
  *   box:t           a track (not a list)
- *   box:dud         a list whose only track no source plays */
+ *   box:dud         a list whose only track no source plays
+ *   box:search:<q>  "three": a list, then sine:300 and sine:350; else nothing */
 static int g_lists; /* list calls, to see expansion stop */
 static uint32_t g_flags; /* flags of the last list call */
 static int emit_list(mm_item_fn emit, void *ctx, uint32_t kind, const char *uri, const char *title)
@@ -63,6 +64,11 @@ static int box_list(void *priv, const char *uri, uint32_t flags, mm_item_fn emit
 		emit_list(emit, ctx, MM_ITEM_LIST, "box:loop", "Loop");
 	} else if (!strcmp(uri, "box:dud")) {
 		emit_list(emit, ctx, MM_ITEM_TRACK, "nosuch:x", "Dud");
+	} else if (!strncmp(uri, "box:search:", 11)) {
+		if (strcmp(uri + 11, "three") != 0) return 0;
+		if (emit_list(emit, ctx, MM_ITEM_LIST, "box:b", "B")) return 0;
+		if (emit_list(emit, ctx, MM_ITEM_TRACK, "sine:300:5", "Three")) return 0;
+		emit_list(emit, ctx, MM_ITEM_TRACK, "sine:350:5", "Three-fifty");
 	} else if (!strcmp(uri, "box:t")) {
 		return MM_NOT_A_LIST;
 	} else if (strcmp(uri, "box:empty") != 0) {
@@ -325,6 +331,34 @@ static int lists(void)
 	return 0;
 }
 
+static int search(void)
+{
+	CHECK(catalog_is_query("daft punk") && catalog_is_query("nosuch:thing") && catalog_is_query("three"),
+	      "words, and a scheme nothing claims, are a query");
+	CHECK(!catalog_is_query("/music/a.flac") && !catalog_is_query("sine:440") && !catalog_is_query("box:a") &&
+	      !catalog_is_query("file:/x") && !catalog_is_query(""), "paths and claimed URIs are not");
+
+	CHECK(run("search", "three", NULL) == MM_REPLY_RAW &&
+	      !strcmp(R, "list\tbox:b\tB\tArtist Tab\t-\t-\n"
+	                 "track\tsine:300:5\tThree\tArtist Tab\t-\t1:01\n"
+	                 "track\tsine:350:5\tThree-fifty\tArtist Tab\t-\t1:01\n"), "every source's results");
+	config_override("catalog.search_max=2");
+	config_reload();
+	CHECK(run("search", "three", NULL) == MM_REPLY_RAW && !strstr(R, "sine:350"), "capped per source");
+	config_override("catalog.search_max=20");
+	config_reload();
+	CHECK(run("search", "nothing", NULL) == MM_REPLY_RAW && !strcmp(R, "no results\n"), "no results");
+	CHECK(run("search", NULL, NULL) == MM_ERR, "search needs words");
+
+	queue_clear();
+	CHECK(run("play", "three", NULL) == MM_OK && !strcmp(now(), "sine:300:5") && queue_length() == 1,
+	      "play <words>: the first track found, not the list before it");
+	CHECK(run("play", "nothing", NULL) == MM_ERR && strstr(R, "nothing found"), "play <words> with no hit");
+	player_stop();
+	queue_clear();
+	return 0;
+}
+
 int main(void)
 {
 	config_override("host.sink=testsink");
@@ -344,6 +378,7 @@ int main(void)
 	RUN(gapless);
 	RUN(edits_drop_preload);
 	RUN(lists);
+	RUN(search);
 
 	queue_fini();
 	CHECK(!ipc_has_verb("queue"), "fini drops the verbs");
