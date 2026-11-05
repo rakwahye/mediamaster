@@ -43,12 +43,28 @@
 #define READ_CHUNK 1024u
 #define FULL_WAIT_NS (5 * 1000 * 1000)
 
+#define TAGS_MAX 2048
+
 struct strm {
 	const struct mm_plugin *src_p;
 	void *stream;             /* NULL = empty slot */
 	struct mm_stream_info info;
 	char uri[1024];
+	char tags[TAGS_MAX];      /* "key: value\n" lines, as status prints them */
 	uint32_t item;
+};
+
+/* What a source said about a stream that is not in a slot: one being
+ * opened and not placed yet (taken when it is), or one on its way out
+ * (never taken). A few entries, so the second kind cannot crowd out the
+ * first. */
+#define PENDING 8
+
+struct pending {
+	void *stream;
+	int has_info, has_tags;
+	struct mm_stream_info info;
+	char tags[TAGS_MAX];
 };
 
 static struct {
@@ -60,6 +76,8 @@ static struct {
 
 	pthread_mutex_t slock; /* spk/dec/nxt, shared with the reader */
 	struct strm spk, dec, nxt;
+	struct pending pend[PENDING];
+	unsigned pend_next;
 	uint32_t item_seq;
 	uint32_t next_asked;   /* dec item we last asked the queue to follow */
 	int state;
@@ -318,12 +336,39 @@ static void uri_scheme(const char *uri, char *out, size_t cap)
 	}
 }
 
+/* slock held. A newly opened stream enters a slot: what its source said
+ * about it before that applies now. */
+static void adopt(struct strm *t)
+{
+	for (unsigned i = 0; i < PENDING; i++) {
+		struct pending *q = &P.pend[i];
+		if (!q->stream || q->stream != t->stream) continue;
+		if (q->has_info) t->info = q->info;
+		if (q->has_tags) memcpy(t->tags, q->tags, sizeof(t->tags));
+		memset(q, 0, sizeof(*q));
+	}
+}
+
+/* slock held. The entry for `stream`, made if need be. */
+static struct pending *pending_for(void *stream)
+{
+	for (unsigned i = 0; i < PENDING; i++)
+		if (P.pend[i].stream == stream) return &P.pend[i];
+	struct pending *q = &P.pend[P.pend_next++ % PENDING];
+	memset(q, 0, sizeof(*q));
+	q->stream = stream;
+	return q;
+}
+
 /* Resolve and open `uri` into t (lock held). */
 static int open_strm(const char *uri, struct strm *t, char *err, size_t errlen)
 {
 	char scheme[32];
 	void *priv;
 	memset(t, 0, sizeof(*t));
+	pthread_mutex_lock(&P.slock);
+	memset(P.pend, 0, sizeof(P.pend)); /* only this open's stream counts */
+	pthread_mutex_unlock(&P.slock);
 	uri_scheme(uri, scheme, sizeof(scheme));
 	if (loader_find_source(scheme, &t->src_p, &priv) != 0) {
 		snprintf(err, errlen, "no source for '%s:'", scheme);
@@ -357,6 +402,7 @@ int player_play(const char *uri, char *err, size_t errlen)
 	close_all();
 	flush();
 	pthread_mutex_lock(&P.slock);
+	adopt(&t);
 	P.spk = P.dec = t;
 	pthread_mutex_unlock(&P.slock);
 	atomic_store(&P.dec_frames, 0);
@@ -388,6 +434,7 @@ int player_preload(const char *uri, char *err, size_t errlen)
 	}
 	pthread_mutex_lock(&P.slock);
 	old = P.nxt;
+	adopt(&t);
 	P.nxt = t;
 	pthread_mutex_unlock(&P.slock);
 	strm_close(&old);
@@ -611,10 +658,56 @@ void player_stream_update(void *stream, const struct mm_stream_info *info)
 {
 	if (!stream || !info) return;
 	pthread_mutex_lock(&P.slock);
-	int spk = 0;
-	if (P.spk.stream == stream) { P.spk.info = *info; spk = 1; }
-	if (P.dec.stream == stream) P.dec.info = *info;
-	if (P.nxt.stream == stream) P.nxt.info = *info;
+	int spk = 0, placed = 0;
+	if (P.spk.stream == stream) { P.spk.info = *info; spk = placed = 1; }
+	if (P.dec.stream == stream) { P.dec.info = *info; placed = 1; }
+	if (P.nxt.stream == stream) { P.nxt.info = *info; placed = 1; }
+	if (!placed) {
+		struct pending *q = pending_for(stream);
+		q->info = *info;
+		q->has_info = 1;
+	}
+	pthread_mutex_unlock(&P.slock);
+	if (spk) atomic_fetch_add(&P.metas, 1);
+}
+
+static const char *const tag_keys[] = {
+	"title", "artist", "album", "albumartist", "tracknumber", "discnumber", "date", "genre", "art", NULL
+};
+
+/* kv → "key: value\n" lines, known keys only, one line per value. */
+static void tags_format(char *out, size_t cap, const char *const *kv)
+{
+	size_t o = 0;
+	out[0] = '\0';
+	for (; kv && kv[0] && kv[1]; kv += 2) {
+		int known = 0;
+		for (const char *const *k = tag_keys; *k && !known; k++) known = !strcmp(*k, kv[0]);
+		if (!known || !kv[1][0]) continue;
+		size_t need = strlen(kv[0]) + 2 + strlen(kv[1]) + 1;
+		if (o + need + 1 > cap) break; /* whole lines only */
+		o += (size_t)sprintf(out + o, "%s: ", kv[0]);
+		for (const char *v = kv[1]; *v; v++) out[o++] = (*v == '\n' || *v == '\r') ? ' ' : *v;
+		out[o++] = '\n';
+		out[o] = '\0';
+	}
+}
+
+void player_stream_tags(void *stream, const char *const *kv)
+{
+	char tags[TAGS_MAX];
+	if (!stream) return;
+	tags_format(tags, sizeof(tags), kv);
+	pthread_mutex_lock(&P.slock);
+	int spk = 0, placed = 0;
+	if (P.spk.stream == stream) { memcpy(P.spk.tags, tags, sizeof(tags)); spk = placed = 1; }
+	if (P.dec.stream == stream) { memcpy(P.dec.tags, tags, sizeof(tags)); placed = 1; }
+	if (P.nxt.stream == stream) { memcpy(P.nxt.tags, tags, sizeof(tags)); placed = 1; }
+	if (!placed) {
+		struct pending *q = pending_for(stream);
+		memcpy(q->tags, tags, sizeof(tags));
+		q->has_tags = 1;
+	}
 	pthread_mutex_unlock(&P.slock);
 	if (spk) atomic_fetch_add(&P.metas, 1);
 }
@@ -724,10 +817,10 @@ static int v_status(void *priv, struct mm_verb_ctx *c)
 	if (k->info.duration_ms)
 		snprintf(dur, sizeof(dur), "%.3f", (double)k->info.duration_ms / 1000.0);
 	snprintf(c->reply, c->reply_len,
-	         "state: %s\nitem: %u\nuri: %s\nsource: %s\nposition: %.3f\nduration: %s\nseekable: %s\n"
+	         "state: %s\nitem: %u\nuri: %s\nsource: %s\n%sposition: %.3f\nduration: %s\nseekable: %s\n"
 	         "next: %s\nvolume: %d\nsink: %s\nbuffered: %.3f\nunderruns: %" PRIu64 "\n",
 	         names[P.state], k->stream ? k->item : 0u, k->uri[0] ? k->uri : "-", k->src_p ? k->src_p->name : "-",
-	         (double)pos / 1000.0, dur,
+	         k->tags, (double)pos / 1000.0, dur,
 	         (k->info.flags & MM_STREAM_SEEKABLE) ? "yes" : "no", next,
 	         P.vol, P.sink_p ? P.sink_p->name : "-",
 	         (double)ring_fill(&P.play) / MM_PCM_RATE,

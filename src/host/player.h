@@ -71,6 +71,8 @@ uint32_t player_item(void);
 /** A source reports new info for one of its open streams (see
  * mm_host.stream_update). Applies to whichever slot holds it. */
 void player_stream_update(void *stream, const struct mm_stream_info *info);
+/** Likewise for tags (mm_host.stream_tags). */
+void player_stream_tags(void *stream, const char *const *kv);
 /** Changes whenever the speaker item's info is updated. */
 uint32_t player_meta_count(void);
 /** Number of successful seeks so far. */

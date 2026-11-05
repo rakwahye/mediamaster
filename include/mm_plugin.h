@@ -76,7 +76,7 @@ enum mm_event {
 	MM_EV_VOLUME = 1u << 2,
 	MM_EV_SEEK   = 1u << 3, /* position jumped (seek) */
 	MM_EV_QUEUE  = 1u << 4, /* queue contents or cursor changed */
-	MM_EV_META   = 1u << 5  /* the item at the speaker learned its duration etc. */
+	MM_EV_META   = 1u << 5  /* the item at the speaker learned its duration, tags etc. */
 };
 
 typedef void (*mm_event_fn)(void *priv, uint32_t events);
@@ -126,6 +126,17 @@ struct mm_host {
 	 * filled in. Any thread, but never after `close` returned for that
 	 * stream. */
 	void (*stream_update)(const struct mm_host *h, void *stream, const struct mm_stream_info *info);
+
+	/** What a stream is: its tags, as `kv` = key, value, key, value, ...,
+	 * NULL. Replaces the stream's tags. Keys, all optional:
+	 *   title  artist (once per artist)  album  albumartist (likewise)
+	 *   tracknumber  discnumber  date  genre  art (cover, an http(s):// or
+	 *   file:// URL)
+	 * Other keys are ignored. Values are UTF-8; line breaks become spaces.
+	 * Any thread, including from inside `open` for the handle it is about
+	 * to return, but never after `close` returned for that stream. Like
+	 * stream_update, a call during or soon after `open` is not lost. */
+	void (*stream_tags)(const struct mm_host *h, void *stream, const char *const *kv);
 };
 
 /** True if host `h` provides `field` (it was built with it). */

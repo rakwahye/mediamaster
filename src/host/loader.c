@@ -74,6 +74,12 @@ static void h_stream_update(const struct mm_host *h, void *stream, const struct 
 	player_stream_update(stream, info);
 }
 
+static void h_stream_tags(const struct mm_host *h, void *stream, const char *const *kv)
+{
+	(void)h;
+	player_stream_tags(stream, kv);
+}
+
 /* ------------------------------------------------------------------ registry */
 
 static int name_ok(const char *n)
@@ -141,6 +147,7 @@ int loader_add(const struct mm_plugin *p, void *dl, const char *origin)
 	s->host.command = h_command;
 	s->host.subscribe = h_subscribe;
 	s->host.stream_update = h_stream_update;
+	s->host.stream_tags = h_stream_tags;
 	s->host.ctx = s;
 	s->state = in_list(config_get("host.disable"), p->name) ? MM_PLUGIN_DISABLED : MM_PLUGIN_LOADED;
 	s_n++;

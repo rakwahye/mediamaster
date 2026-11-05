@@ -28,6 +28,8 @@ static const struct mm_plugin testsink = { .abi = MM_ABI, .name = "testsink", .i
 struct late { int id; };
 static struct late g_late[4];
 static int g_nlate;
+static const struct mm_host *g_late_h;
+static int g_tell_in_open; /* report tags and a length from inside open */
 static int late_open(void *priv, const char *uri, void **st, struct mm_stream_info *in)
 {
 	(void)priv; (void)uri;
@@ -35,6 +37,13 @@ static int late_open(void *priv, const char *uri, void **st, struct mm_stream_in
 	*st = &g_late[g_nlate++];
 	in->duration_ms = 0;
 	in->flags = MM_STREAM_LIVE;
+	if (g_tell_in_open) {
+		static const char *const kv[] = { "title", "Song", "artist", "A", "artist", "B",
+		                                  "bogus", "x", "album", "", NULL };
+		struct mm_stream_info known = { 61000, MM_STREAM_SEEKABLE };
+		g_late_h->stream_tags(g_late_h, *st, kv);
+		g_late_h->stream_update(g_late_h, *st, &known);
+	}
 	return 0;
 }
 static long late_read(void *st, float *dst, uint32_t frames)
@@ -45,7 +54,7 @@ static long late_read(void *st, float *dst, uint32_t frames)
 }
 static int late_seek(void *st, uint64_t ms) { (void)st; (void)ms; return 0; }
 static void late_close(void *st) { (void)st; }
-static int late_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
+static int late_init(const struct mm_host *h, void **priv) { g_late_h = h; *priv = NULL; return 0; }
 static const struct mm_source_ops late_ops = { .open = late_open, .read = late_read, .seek = late_seek, .close = late_close };
 static const struct mm_plugin latesrc = { .abi = MM_ABI, .name = "late", .schemes = "late", .init = late_init, .source = &late_ops };
 
@@ -190,6 +199,48 @@ static int late_info(void)
 	return 0;
 }
 
+static int has_line(const char *line)
+{
+	char want[300], text[sizeof(R) + 2] = "\n";
+	snprintf(want, sizeof(want), "\n%s\n", line);
+	cmd("status", NULL, NULL);
+	strcat(text, R);
+	return strstr(text, want) != NULL;
+}
+
+static int tags(void)
+{
+	CHECK(MM_HOST_HAS(H, stream_tags), "this host has stream_tags");
+	struct mm_host old = *H;
+	old.size = (uint32_t)offsetof(struct mm_host, stream_tags);
+	CHECK(!MM_HOST_HAS(&old, stream_tags), "a host built before it reads as not having it");
+
+	/* Told from inside open, before the host has the handle. */
+	g_nlate = 0;
+	g_tell_in_open = 1;
+	CHECK(cmd("play", "late:t", NULL) == MM_OK, "play");
+	g_tell_in_open = 0;
+	step();
+	CHECK(has_line("title: Song") && has_line("artist: A") && has_line("artist: B"), "tags from open shown");
+	CHECK(!strstr(R, "bogus") && !strstr(R, "album:"), "unknown keys and empty values dropped");
+	CHECK(field_is("duration", "61.000") && field_is("seekable", "yes"), "a length from open is kept too");
+
+	/* Told later: replaces, raises META, no line breaks get through. */
+	static const char *const kv[] = { "title", "Two\nLines", "art", "https://x/y.jpg", NULL };
+	H->stream_tags(H, &g_late[0], kv);
+	CHECK(step() & MM_EV_META, "new tags for the playing item are a meta event");
+	CHECK(has_line("title: Two Lines") && has_line("art: https://x/y.jpg"), "replaced, one line each");
+	CHECK(!strstr(R, "artist:"), "nothing left from before");
+
+	/* A preloaded item's tags wait with it; a stream not open raises nothing. */
+	CHECK(cmd("queue", "add", "late:u") == MM_OK, "queue another");
+	H->stream_tags(H, &g_late[3], kv);
+	CHECK(!(step() & MM_EV_META), "tags for a stream that is not open do nothing");
+	CHECK(cmd("stop", NULL, NULL) == MM_OK, "stop");
+	step();
+	return 0;
+}
+
 int main(void)
 {
 	config_override("host.sink=testsink");
@@ -205,6 +256,7 @@ int main(void)
 	RUN(commands);
 	RUN(events);
 	RUN(late_info);
+	RUN(tags);
 
 	queue_fini();
 	player_fini();
