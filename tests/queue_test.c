@@ -4,11 +4,13 @@
  * is read from the player's current URI. */
 #include "queue.h"
 #include "catalog.h"
+#include "radio.h"
 #include "player.h"
 #include "config.h"
 #include "ipc.h"
 #include "loader.h"
 #include "check.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,9 +37,14 @@ static float s_buf[MM_PCM_CHANNELS * 4800];
  *   box:empty       nothing
  *   box:t           a track (not a list)
  *   box:dud         a list whose only track no source plays
- *   box:search:<q>  "three": a list, then sine:300 and sine:350; else nothing */
-static int g_lists; /* list calls, to see expansion stop */
-static uint32_t g_flags; /* flags of the last list call */
+ *   box:search:<q>  "three": a list, then sine:300 and sine:350; else nothing
+ *   sine:radio:<uri> after sine:100:*: sine:100 again, sine:610, sine:620, a list,
+ *                   sine:630; after anything else, an error. (The catalog
+ *                   claims sine: too, for radio; a tone is a track.) */
+/* Written by list, which radio calls on its own thread. */
+static atomic_int g_lists;       /* list calls, to see expansion stop */
+static atomic_int g_radio_calls;
+static atomic_uint g_flags;      /* flags of the last list call */
 static int emit_list(mm_item_fn emit, void *ctx, uint32_t kind, const char *uri, const char *title)
 {
 	struct mm_item it = { kind, uri, title, "Artist\tTab", NULL, kind == MM_ITEM_TRACK ? 61000 : 0 };
@@ -64,11 +71,24 @@ static int box_list(void *priv, const char *uri, uint32_t flags, mm_item_fn emit
 		emit_list(emit, ctx, MM_ITEM_LIST, "box:loop", "Loop");
 	} else if (!strcmp(uri, "box:dud")) {
 		emit_list(emit, ctx, MM_ITEM_TRACK, "nosuch:x", "Dud");
+	} else if (!strncmp(uri, "sine:radio:", 11)) {
+		g_radio_calls++;
+		if (strncmp(uri + 11, "sine:100", 8) != 0) {
+			snprintf(err, errlen, "no radio for %s", uri + 11);
+			return -1;
+		}
+		if (emit_list(emit, ctx, MM_ITEM_TRACK, uri + 11, "Seed")) return 0;
+		if (emit_list(emit, ctx, MM_ITEM_TRACK, "sine:610:0.05", "R1")) return 0;
+		if (emit_list(emit, ctx, MM_ITEM_TRACK, "sine:620:0.05", "R2")) return 0;
+		if (emit_list(emit, ctx, MM_ITEM_LIST, "box:b", "B")) return 0;
+		emit_list(emit, ctx, MM_ITEM_TRACK, "sine:630:0.05", "R3");
 	} else if (!strncmp(uri, "box:search:", 11)) {
 		if (strcmp(uri + 11, "three") != 0) return 0;
 		if (emit_list(emit, ctx, MM_ITEM_LIST, "box:b", "B")) return 0;
 		if (emit_list(emit, ctx, MM_ITEM_TRACK, "sine:300:5", "Three")) return 0;
 		emit_list(emit, ctx, MM_ITEM_TRACK, "sine:350:5", "Three-fifty");
+	} else if (!strncmp(uri, "sine:", 5)) {
+		return MM_NOT_A_LIST;
 	} else if (!strcmp(uri, "box:t")) {
 		return MM_NOT_A_LIST;
 	} else if (strcmp(uri, "box:empty") != 0) {
@@ -79,7 +99,7 @@ static int box_list(void *priv, const char *uri, uint32_t flags, mm_item_fn emit
 }
 static int box_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
 static const struct mm_catalog_ops box_ops = { .list = box_list };
-static const struct mm_plugin boxcat = { .abi = MM_ABI, .name = "box", .schemes = "box", .init = box_init, .catalog = &box_ops };
+static const struct mm_plugin boxcat = { .abi = MM_ABI, .name = "box", .schemes = "box,sine", .init = box_init, .catalog = &box_ops };
 
 static char R[1 << 16];
 static int run(const char *a0, const char *a1, const char *a2)
@@ -359,6 +379,57 @@ static int search(void)
 	return 0;
 }
 
+/* Tick the main loop (radio included) until cond or ~2 s. */
+#define TICK_UNTIL(cond) do { \
+	for (int _i = 0; _i < 400 && !(cond); _i++) { \
+		s_pull(s_ctx, s_buf, 480); queue_tick(); radio_tick(); \
+		struct timespec _ts = { 0, 5000000 }; nanosleep(&_ts, NULL); \
+	} } while (0)
+
+static int radio(void)
+{
+	char err[256], list[2048];
+	queue_clear();
+	g_radio_calls = 0;
+	CHECK(run("radio", NULL, NULL) == MM_OK && !strcmp(R, "on"), "on by default");
+
+	/* One track queued: radio adds more like it, minus itself, the list
+	 * and what is queued already. */
+	CHECK(queue_add("sine:620:0.05") == 1, "queue a track radio will also name");
+	CHECK(queue_play_uri("sine:100:0.3", err, sizeof(err)) == 0, "play the seed after it");
+	CHECK(queue_cursor() == 2 && queue_length() == 2, "the seed is the last item");
+	TICK_UNTIL(queue_length() == 4);
+	queue_list(list, sizeof(list));
+	CHECK(queue_length() == 4 && strstr(list, "sine:610:0.05") && strstr(list, "sine:630:0.05"),
+	      "610 and 630 added; the seed, the queued 620 and the list left out");
+	CHECK(g_radio_calls == 1, "asked once");
+	for (int i = 0; i < 20; i++) radio_tick();
+	CHECK(g_radio_calls == 1, "an item seeds radio once");
+
+	/* Playback carries on into them. */
+	TICK_UNTIL(!strcmp(now(), "sine:610:0.05"));
+	CHECK(!strcmp(now(), "sine:610:0.05"), "the seed ended into the first radio track");
+
+	/* Off: the last item asks for nothing. */
+	CHECK(run("radio", "off", NULL) == MM_OK && !strcmp(R, "off"), "off");
+	int before = g_radio_calls;
+	CHECK(queue_play_at(4, err, sizeof(err)) == 0, "play the last item");
+	TICK_UNTIL(0);
+	CHECK(g_radio_calls == before, "radio off: nothing asked");
+	CHECK(run("radio", "maybe", NULL) == MM_ERR, "usage");
+	CHECK(run("radio", "on", NULL) == MM_OK, "back on");
+
+	/* No radio for the seed: nothing added, nothing breaks. */
+	queue_clear();
+	CHECK(queue_play_uri("sine:440:0.3", err, sizeof(err)) == 0, "a seed with no radio");
+	TICK_UNTIL(g_radio_calls > before);
+	CHECK(g_radio_calls == before + 1 && queue_length() == 1, "asked, got nothing, added nothing");
+	player_stop();
+	queue_clear();
+	radio_fini();
+	return 0;
+}
+
 int main(void)
 {
 	config_override("host.sink=testsink");
@@ -370,6 +441,7 @@ int main(void)
 	CHECK(player_init() == 0, "player");
 	CHECK(queue_init() == 0, "queue");
 	CHECK(catalog_init() == 0, "catalog");
+	CHECK(radio_init() == 0, "radio");
 
 	RUN(verbs);
 	RUN(basics);
@@ -379,6 +451,7 @@ int main(void)
 	RUN(edits_drop_preload);
 	RUN(lists);
 	RUN(search);
+	RUN(radio);
 
 	queue_fini();
 	CHECK(!ipc_has_verb("queue"), "fini drops the verbs");

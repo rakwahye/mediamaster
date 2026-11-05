@@ -56,5 +56,9 @@ unsigned long long queue_generation(void);
 
 /** One line per item, "> " marking the cursor. */
 void queue_list(char *buf, size_t cap);
+/** 1 with the URI in uri if the current item is the queue's last. */
+int queue_on_last(char *uri, size_t cap);
+/** 1 if `uri` is anywhere in the queue. */
+int queue_contains(const char *uri);
 
 #endif

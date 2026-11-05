@@ -225,6 +225,24 @@ void queue_clear(void)
 	pthread_mutex_unlock(&Q.lock);
 }
 
+int queue_on_last(char *uri, size_t cap)
+{
+	pthread_mutex_lock(&Q.lock);
+	int last = Q.cur >= 0 && !Q.cur_removed && (size_t)Q.cur + 1 == Q.n;
+	if (last) snprintf(uri, cap, "%s", Q.uri[Q.cur]);
+	pthread_mutex_unlock(&Q.lock);
+	return last;
+}
+
+int queue_contains(const char *uri)
+{
+	pthread_mutex_lock(&Q.lock);
+	int found = 0;
+	for (size_t i = 0; i < Q.n && !found; i++) found = !strcmp(Q.uri[i], uri);
+	pthread_mutex_unlock(&Q.lock);
+	return found;
+}
+
 size_t queue_length(void)
 {
 	pthread_mutex_lock(&Q.lock);
