@@ -117,6 +117,32 @@ if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
 		[ "$loud" -ge 47000 ] || fail "expected ~48000 audible frames over http, got $loud"
 	fi
 	if "$MMCTL" play "$T/nope.flac" >/dev/null 2>&1; then fail "a missing file should be refused"; fi
+
+	# folders are lists: subfolders first, then audio files in natural order
+	A="$T/lib/Album"
+	mkdir -p "$A/CD2" "$T/lib/Other"
+	for f in "2 two.flac" "10 ten.FLAC" ".hidden.flac" "CD2/1 a.flac"; do cp "$T/tone one.flac" "$A/$f"; done
+	echo text >"$A/notes.txt"
+	"$MMCTL" browse "$A/" >"$T/br" || fail "browse a folder"
+	printf 'list\t%s\tCD2\t-\t-\t-\ntrack\t%s\t2 two.flac\t-\t-\t-\ntrack\t%s\t10 ten.FLAC\t-\t-\t-\n' \
+		"$A/CD2" "$A/2 two.flac" "$A/10 ten.FLAC" >"$T/want"
+	cmp -s "$T/br" "$T/want" || fail "browse: $(cat "$T/br")"
+	if "$MMCTL" browse "$A/2 two.flac" >/dev/null 2>&1; then fail "a file is not a list"; fi
+	printf 'ffmpeg.music_dir = %s\n' "$T/lib" >>"$T/config"
+	"$MMCTL" reload >/dev/null # queued: give it a moment
+	i=0
+	until "$MMCTL" browse file: 2>/dev/null | cut -f2 | tr '\n' ' ' | grep -qx "$A $T/lib/Other "; do
+		i=$((i + 1)); [ $i -lt 30 ] || fail "file: is the music folder: $("$MMCTL" browse file:)"
+		sleep 0.1
+	done
+	"$MMCTL" queue clear >/dev/null
+	"$MMCTL" queue add "$A" | grep -qx 'ok added 1-3' || fail "queue add of a folder"
+	"$MMCTL" queue | sed -n 's/^.. *[0-9]*  //p' | tr '\n' '|' |
+		grep -qx "$A/CD2/1 a.flac|$A/2 two.flac|$A/10 ten.FLAC|" || fail "folder order: $("$MMCTL" queue)"
+	"$MMCTL" queue clear >/dev/null
+	"$MMCTL" play "$A/CD2" | grep -q "^ok playing $A/CD2/1 a.flac" || fail "play of a folder"
+	"$MMCTL" stop >/dev/null
+	"$MMCTL" queue clear >/dev/null
 fi
 
 # the queue: two tones play back to back, then playback stops

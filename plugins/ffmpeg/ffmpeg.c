@@ -14,6 +14,10 @@
  * Local paths are passed as "file:<path>" so a name starting with '-' or
  * containing ':' is never read as an option or a protocol.
  *
+ * Folders are lists (catalog): `browse`, `queue add` and `play` of a
+ * folder take the audio files in it and in its subfolders, in natural
+ * order (2 before 10); "file:" alone is the music folder.
+ *
  * Children get an empty signal mask and default dispositions (the daemon
  * blocks its signals for signalfd), /dev/null on stdin, and nothing else
  * of ours: every pipe is close-on-exec.
@@ -22,9 +26,11 @@
  *   ffmpeg.bin          = ffmpeg
  *   ffmpeg.ffprobe      = ffprobe
  *   ffmpeg.probe_ms     = 5000   give up on ffprobe after this (→ live)
- *   ffmpeg.net_timeout  = 15     seconds; ffmpeg -rw_timeout for http(s) */
+ *   ffmpeg.net_timeout  = 15     seconds; ffmpeg -rw_timeout for http(s)
+ *   ffmpeg.music_dir    = ~/Music   what "file:" lists */
 
 #include "mm_plugin.h"
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -517,6 +523,91 @@ static const struct mm_source_ops s_source = {
 	.close = ff_close,
 };
 
+/* ------------------------------------------------------------------ catalog */
+
+/* What a folder listing offers as tracks. Anything else in it is skipped
+ * rather than offered and failing at play. */
+static int audio_name(const char *name)
+{
+	static const char *const ext[] = {
+		"flac", "mp3", "ogg", "oga", "opus", "m4a", "m4b", "aac", "wav", "aif", "aiff",
+		"wv", "ape", "mka", "mpc", "alac", "wma", "dsf", "dff", "tta", "spx", NULL
+	};
+	const char *dot = strrchr(name, '.');
+	if (!dot || dot == name) return 0;
+	for (const char *const *e = ext; *e; e++) {
+		const char *a = dot + 1, *b = *e;
+		while (*a && *b && (*a | 0x20) == *b) { a++; b++; }
+		if (!*a && !*b) return 1;
+	}
+	return 0;
+}
+
+static int visible(const struct dirent *d)
+{
+	return d->d_name[0] != '.';
+}
+
+static int ff_list(void *priv, const char *uri, mm_item_fn emit, void *ctx, char *err, size_t errlen)
+{
+	struct ff_priv *p = priv;
+	char input[4096], dir[4096];
+	int is_net;
+
+	if (!strcmp(uri, "file:") || !strcmp(uri, "file://")) {
+		const char *home = getenv("HOME");
+		const char *music = p->h->config_get(p->h, "music_dir");
+		if (music && *music) snprintf(dir, sizeof(dir), "%s", music);
+		else snprintf(dir, sizeof(dir), "%s/Music", home ? home : "");
+	} else {
+		if (uri_to_input(uri, input, sizeof(input), &is_net) != 0) {
+			snprintf(err, errlen, "not a usable path or URL: %s", uri);
+			return -1;
+		}
+		if (is_net) return MM_NOT_A_LIST;
+		snprintf(dir, sizeof(dir), "%s", input + 5);
+	}
+	size_t dl = strlen(dir);
+	while (dl > 1 && dir[dl - 1] == '/') dir[--dl] = '\0';
+
+	struct stat st;
+	if (stat(dir, &st) != 0) {
+		snprintf(err, errlen, "%s: %s", dir, strerror(errno));
+		return -1;
+	}
+	if (S_ISREG(st.st_mode)) return MM_NOT_A_LIST;
+	if (!S_ISDIR(st.st_mode)) {
+		snprintf(err, errlen, "%s: not a file or folder", dir);
+		return -1;
+	}
+
+	struct dirent **ents;
+	int n = scandir(dir, &ents, visible, versionsort);
+	if (n < 0) {
+		snprintf(err, errlen, "%s: %s", dir, strerror(errno));
+		return -1;
+	}
+	/* Folders first, then files, each in natural order. */
+	int stop = 0;
+	for (int pass = 0; pass < 2; pass++) {
+		for (int i = 0; i < n && !stop; i++) {
+			char path[4096 + 256];
+			snprintf(path, sizeof(path), "%s%s%s", dir, dl > 1 ? "/" : "", ents[i]->d_name);
+			if (stat(path, &st) != 0) continue;
+			struct mm_item it = { 0, path, ents[i]->d_name, NULL, NULL, 0 };
+			if (pass == 0 && S_ISDIR(st.st_mode)) it.kind = MM_ITEM_LIST;
+			else if (pass == 1 && S_ISREG(st.st_mode) && audio_name(ents[i]->d_name)) it.kind = MM_ITEM_TRACK;
+			else continue;
+			stop = emit(ctx, &it) != 0;
+		}
+	}
+	for (int i = 0; i < n; i++) free(ents[i]);
+	free(ents);
+	return 0;
+}
+
+static const struct mm_catalog_ops s_catalog = { .list = ff_list };
+
 static const struct mm_plugin s_plugin = {
 	.abi = MM_ABI,
 	.attrs = MM_ATTR_SPAWNS | MM_ATTR_NETWORK,
@@ -527,6 +618,7 @@ static const struct mm_plugin s_plugin = {
 	.init = ff_init,
 	.fini = ff_fini,
 	.source = &s_source,
+	.catalog = &s_catalog,
 };
 
 MM_PLUGIN_DEFINE(ffmpeg)
