@@ -11,6 +11,7 @@
 
 #include "builtins.h"
 #include "config.h"
+#include "events.h"
 #include "ipc.h"
 #include "loader.h"
 #include "log.h"
@@ -218,6 +219,7 @@ int main(int argc, char **argv)
 			break;
 		}
 		queue_tick();
+		events_poll();
 		if (pr == 0) continue;
 		if (pf[0].revents & POLLIN) {
 			struct signalfd_siginfo si;

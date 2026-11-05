@@ -65,6 +65,10 @@ uint32_t player_buffered_frames(void);
 /** Gaps in the sink's audio after an item started flowing and before its
  * end. Startup latency after play or seek is not counted. */
 uint64_t player_underruns(void);
+/** Id of the item at the speaker, 0 when stopped. Changes per item. */
+uint32_t player_item(void);
+/** Number of successful seeks so far. */
+uint32_t player_seek_count(void);
 /** URI of the open stream into buf ("" when stopped). */
 void player_current_uri(char *buf, size_t cap);
 /** Position of the item at the speaker, in ms. */

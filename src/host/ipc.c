@@ -216,6 +216,47 @@ static void build_help(char *out, size_t cap)
 	pthread_mutex_unlock(&s_reg_lock);
 }
 
+/* Serialises verb handlers: socket clients and in-process commands run
+ * one at a time, as handlers are entitled to assume. */
+static pthread_mutex_t s_dispatch_lock = PTHREAD_MUTEX_INITIALIZER;
+
+int ipc_dispatch(int argc, char *const *argv, const char *body, size_t body_len,
+                 char *reply, size_t reply_len)
+{
+	if (argc < 1 || !argv[0] || !reply_len) return MM_ERR;
+	reply[0] = '\0';
+	if (!strcmp(argv[0], "help")) {
+		build_help(reply, reply_len);
+		return MM_REPLY_RAW;
+	}
+
+	struct verb v = { 0 };
+	pthread_mutex_lock(&s_reg_lock);
+	for (int i = 0; i < s_nverbs; i++)
+		if (!strcmp(s_verbs[i].verb, argv[0])) { v = s_verbs[i]; break; }
+	pthread_mutex_unlock(&s_reg_lock);
+	if (!v.fn) {
+		snprintf(reply, reply_len, "unknown verb: %s", argv[0]);
+		return MM_ERR;
+	}
+
+	struct mm_verb_ctx c = {
+		.argc = argc, .argv = argv,
+		.body = body ? body : "", .body_len = body ? body_len : 0,
+		.reply = reply, .reply_len = reply_len,
+	};
+	pthread_mutex_lock(&s_dispatch_lock);
+	int rc = v.fn(v.priv, &c);
+	pthread_mutex_unlock(&s_dispatch_lock);
+	reply[reply_len - 1] = '\0';
+	if (rc != MM_REPLY_RAW) {
+		size_t rl = strlen(reply);
+		while (rl > 0 && reply[rl - 1] == '\n') reply[--rl] = '\0';
+		if (rc != MM_OK) rc = MM_ERR;
+	}
+	return rc;
+}
+
 static void handle_client(int fd)
 {
 	static char buf[IPC_FRAME_MAX]; /* IPC thread only */
@@ -227,42 +268,12 @@ static void handle_client(int fd)
 		send_str(fd, "err bad frame\n");
 		return;
 	}
-
-	if (!strcmp(f.argv[0], "help")) {
-		build_help(out, sizeof(out));
-		send_str(fd, out);
-		return;
-	}
-
-	struct verb v = { 0 };
-	pthread_mutex_lock(&s_reg_lock);
-	for (int i = 0; i < s_nverbs; i++)
-		if (!strcmp(s_verbs[i].verb, f.argv[0])) { v = s_verbs[i]; break; }
-	pthread_mutex_unlock(&s_reg_lock);
-
-	if (!v.fn) {
-		snprintf(out, sizeof(out), "err unknown verb: %s\n", f.argv[0]);
-		send_str(fd, out);
-		return;
-	}
-
-	reply[0] = '\0';
-	struct mm_verb_ctx c = {
-		.argc = f.argc, .argv = f.argv,
-		.body = f.body, .body_len = f.body_len,
-		.reply = reply, .reply_len = sizeof(reply),
-	};
-	int rc = v.fn(v.priv, &c);
-	reply[sizeof(reply) - 1] = '\0';
-
+	int rc = ipc_dispatch(f.argc, f.argv, f.body, f.body_len, reply, sizeof(reply));
 	if (rc == MM_REPLY_RAW) {
 		send_str(fd, reply);
 		return;
 	}
-	size_t rl = strlen(reply);
-	while (rl > 0 && reply[rl - 1] == '\n') reply[--rl] = '\0';
-	snprintf(out, sizeof(out), "%s%s%s\n", rc == MM_OK ? "ok" : "err",
-	         rl ? " " : "", reply);
+	snprintf(out, sizeof(out), "%s%s%s\n", rc == MM_OK ? "ok" : "err", reply[0] ? " " : "", reply);
 	send_str(fd, out);
 }
 

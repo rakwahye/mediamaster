@@ -69,6 +69,17 @@ struct mm_verb_ctx {
 
 typedef int (*mm_verb_fn)(void *priv, struct mm_verb_ctx *c);
 
+/** Host events, delivered on the host main thread (within ~50 ms). */
+enum mm_event {
+	MM_EV_STATE  = 1u << 0, /* playing / paused / stopped changed */
+	MM_EV_TRACK  = 1u << 1, /* a different item reached the speaker */
+	MM_EV_VOLUME = 1u << 2,
+	MM_EV_SEEK   = 1u << 3, /* position jumped (seek) */
+	MM_EV_QUEUE  = 1u << 4  /* queue contents or cursor changed */
+};
+
+typedef void (*mm_event_fn)(void *priv, uint32_t events);
+
 /** Services the host offers a plugin. Each plugin gets its own copy, so
  * the host knows who is calling. Check `size` before touching a field
  * added after ABI 1. */
@@ -88,6 +99,18 @@ struct mm_host {
 	 * plugin automatically at `fini`. Call from `init` only. */
 	int (*register_verb)(const struct mm_host *h, const char *verb,
 	                     const char *help, mm_verb_fn fn, void *priv);
+
+	/** Run a command in-process, exactly as an mmctl client would
+	 * (argv[0] is the verb). `reply` gets the reply text without the
+	 * ok/err framing. Callable from any plugin thread, but not from inside
+	 * a verb handler. @returns MM_OK, MM_ERR or MM_REPLY_RAW. */
+	int (*command)(const struct mm_host *h, int argc, const char *const *argv,
+	               char *reply, size_t reply_len);
+
+	/** Call cb(priv, events) on the host main thread whenever any event in
+	 * `mask` (enum mm_event) happens. Keep cb short; hand work to your own
+	 * thread. Call from `init` only; removed automatically at `fini`. */
+	int (*subscribe)(const struct mm_host *h, uint32_t mask, mm_event_fn cb, void *priv);
 
 	void *ctx; /* host-private */
 };

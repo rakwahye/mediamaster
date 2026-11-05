@@ -16,7 +16,8 @@
  * The daemon writes one reply and closes: "ok ...\n", "err ...\n", or raw
  * multi-line text for verbs that ask for it.
  *
- * Handlers run on the IPC thread, one at a time. Registration and
+ * Handlers run one at a time: on the IPC thread for socket clients, or on
+ * the caller's thread for in-process commands (ipc_dispatch). Registration and
  * unregistration happen on the main thread while the listener is stopped
  * (startup, shutdown); the registry is locked regardless. */
 
@@ -36,6 +37,14 @@ int ipc_register(const char *owner, const char *verb, const char *help,
 
 /** Drop every verb `owner` registered. */
 void ipc_unregister_owner(const char *owner);
+
+/** Run a verb in-process, exactly as a client would. `reply` gets the
+ * handler's text, without the ok/err framing (trailing newlines trimmed
+ * unless raw). Handlers are serialised with socket clients. Must not be
+ * called from inside a verb handler (it would deadlock).
+ * @returns MM_OK, MM_ERR or MM_REPLY_RAW. */
+int ipc_dispatch(int argc, char *const *argv, const char *body, size_t body_len,
+                 char *reply, size_t reply_len);
 
 /** @returns 1 if `verb` is registered. */
 int ipc_has_verb(const char *verb);

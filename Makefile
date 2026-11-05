@@ -58,7 +58,7 @@ CFLAGS_ffmpeg := -D_GNU_SOURCE
 CFLAGS_pipewire := $(shell pkg-config --cflags libpipewire-0.3 2>/dev/null) -std=gnu99 -Wno-pedantic -Wno-missing-prototypes
 LIBS_pipewire := $(shell pkg-config --libs libpipewire-0.3 2>/dev/null)
 
-HOST_SRC := main.c log.c config.c paths.c ipc.c loader.c builtins.c ring.c player.c queue.c
+HOST_SRC := main.c log.c config.c paths.c ipc.c loader.c builtins.c ring.c player.c queue.c events.c
 HOST_OBJ := $(addprefix $(BUILD)/host/,$(HOST_SRC:.c=.o)) \
             $(foreach p,$(PLUGINS_STATIC),$(BUILD)/static/$(p).o)
 MMCTL_OBJ := $(BUILD)/obj-mmctl/mmctl.o $(BUILD)/host/paths.o
@@ -97,6 +97,10 @@ $(BUILD)/mmctl: $(MMCTL_OBJ)
 TEST_CFLAGS := $(HOST_CFLAGS) -Itests
 T := $(BUILD)/tests
 
+# Everything a test needs once the loader is involved.
+PLAYER_DEPS := src/host/player.c src/host/ring.c src/host/loader.c src/host/ipc.c src/host/config.c src/host/log.c \
+               src/host/queue.c src/host/events.c
+
 $(T)/test-config: tests/config_test.c src/host/config.c src/host/log.c $(HDRS) tests/check.h
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c,$^) $(HOST_LIBS) -o $@
@@ -105,7 +109,7 @@ $(T)/test-ipc: tests/ipc_test.c src/host/ipc.c src/host/log.c $(HDRS) tests/chec
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c,$^) $(HOST_LIBS) -o $@
 
-$(T)/test-loader: tests/loader_test.c src/host/loader.c src/host/ipc.c src/host/config.c src/host/log.c $(HDRS) tests/check.h
+$(T)/test-loader: tests/loader_test.c $(PLAYER_DEPS) $(HDRS) tests/check.h
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c,$^) $(HOST_LIBS) -o $@
 
@@ -113,20 +117,23 @@ $(T)/test-ring: tests/ring_test.c src/host/ring.c $(HDRS) tests/check.h
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c,$^) $(HOST_LIBS) -o $@
 
-PLAYER_DEPS := src/host/player.c src/host/ring.c src/host/loader.c src/host/ipc.c src/host/config.c src/host/log.c
 $(T)/test-player: tests/player_test.c $(PLAYER_DEPS) $(BUILD)/static/raw.o $(HDRS) tests/check.h
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
 
-$(T)/test-ffmpeg: tests/ffmpeg_test.c src/host/loader.c src/host/ipc.c src/host/config.c src/host/log.c $(BUILD)/static/ffmpeg.o $(HDRS) tests/check.h
+$(T)/test-ffmpeg: tests/ffmpeg_test.c $(PLAYER_DEPS) $(BUILD)/static/ffmpeg.o $(HDRS) tests/check.h
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
 
-$(T)/test-queue: tests/queue_test.c src/host/queue.c $(PLAYER_DEPS) $(BUILD)/static/raw.o $(HDRS) tests/check.h
+$(T)/test-queue: tests/queue_test.c $(PLAYER_DEPS) $(BUILD)/static/raw.o $(HDRS) tests/check.h
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
 
-TESTS := $(T)/test-queue $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player $(T)/test-ffmpeg
+$(T)/test-events: tests/events_test.c $(PLAYER_DEPS) $(BUILD)/static/raw.o $(HDRS) tests/check.h
+	@mkdir -p $(@D)
+	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
+
+TESTS := $(T)/test-events $(T)/test-queue $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player $(T)/test-ffmpeg
 
 unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-config
@@ -135,6 +142,7 @@ unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-ring
 	@$(T)/test-player
 	@$(T)/test-queue
+	@$(T)/test-events
 	@$(T)/test-ffmpeg
 
 smoke: all

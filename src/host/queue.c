@@ -27,6 +27,7 @@ static struct {
 	long pre;         /* index handed to the player as the next item */
 	int pre_valid;
 	int pre_removed;  /* like cur_removed, for pre */
+	unsigned long long gen; /* bumped on every change */
 } Q = { .lock = PTHREAD_MUTEX_INITIALIZER, .cur = -1 };
 
 /* The list changed. A preload the reader has not started on is stale:
@@ -34,6 +35,7 @@ static struct {
  * plays on, and `pre` keeps tracking it. */
 static void edited(void)
 {
+	Q.gen++;
 	if (Q.pre_valid && player_preload_state() == 2) return;
 	player_drop_preload();
 	Q.pre_valid = 0;
@@ -72,6 +74,7 @@ static int play_index(long i, char *err, size_t errlen)
 	Q.cur = i;
 	Q.cur_removed = 0;
 	Q.pre_valid = 0; /* player_play dropped any preload */
+	Q.gen++;
 	return 0;
 }
 
@@ -239,6 +242,7 @@ static void on_advanced(void)
 	Q.cur = Q.pre;
 	Q.cur_removed = Q.pre_removed;
 	Q.pre_valid = 0;
+	Q.gen++;
 }
 
 static void on_finished_locked(void);
@@ -270,6 +274,14 @@ static void on_finished_locked(void)
 	} else if (Q.n) {
 		LOGI(TAG, "end of queue");
 	}
+}
+
+unsigned long long queue_generation(void)
+{
+	pthread_mutex_lock(&Q.lock);
+	unsigned long long g = Q.gen;
+	pthread_mutex_unlock(&Q.lock);
+	return g;
 }
 
 void queue_list(char *buf, size_t cap)

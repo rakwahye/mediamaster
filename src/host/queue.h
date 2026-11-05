@@ -48,6 +48,9 @@ int queue_tick(void);
  * next playable item (with a gap). queue_tick calls this. */
 void queue_on_finished(void);
 
+/** Changes whenever the contents or the cursor change. */
+unsigned long long queue_generation(void);
+
 /** One line per item, "> " marking the cursor. */
 void queue_list(char *buf, size_t cap);
 

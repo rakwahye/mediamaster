@@ -4,6 +4,7 @@
 
 #include "loader.h"
 #include "config.h"
+#include "events.h"
 #include "ipc.h"
 #include "log.h"
 #include <ctype.h>
@@ -52,6 +53,18 @@ static int h_register_verb(const struct mm_host *h, const char *verb,
                            const char *help, mm_verb_fn fn, void *priv)
 {
 	return ipc_register(slot_of(h)->p->name, verb, help, fn, priv);
+}
+
+static int h_command(const struct mm_host *h, int argc, const char *const *argv,
+                     char *reply, size_t reply_len)
+{
+	(void)h;
+	return ipc_dispatch(argc, (char *const *)argv, NULL, 0, reply, reply_len);
+}
+
+static int h_subscribe(const struct mm_host *h, uint32_t mask, mm_event_fn cb, void *priv)
+{
+	return events_subscribe(slot_of(h)->p->name, mask, cb, priv);
 }
 
 /* ------------------------------------------------------------------ registry */
@@ -118,6 +131,8 @@ int loader_add(const struct mm_plugin *p, void *dl, const char *origin)
 	s->host.log = h_log;
 	s->host.config_get = h_config_get;
 	s->host.register_verb = h_register_verb;
+	s->host.command = h_command;
+	s->host.subscribe = h_subscribe;
 	s->host.ctx = s;
 	s->state = in_list(config_get("host.disable"), p->name) ? MM_PLUGIN_DISABLED : MM_PLUGIN_LOADED;
 	s_n++;
@@ -203,6 +218,7 @@ void loader_init_all(void)
 		} else {
 			s->state = MM_PLUGIN_FAILED;
 			ipc_unregister_owner(s->p->name); /* anything it registered before failing */
+			events_unsubscribe_owner(s->p->name);
 			LOGW(TAG, "%s: init failed (%d), continuing without it", s->p->name, rc);
 		}
 	}
@@ -220,6 +236,7 @@ void loader_fini_all(void)
 {
 	for (size_t i = s_n; i-- > 0; ) {
 		struct slot *s = &s_slots[i];
+		events_unsubscribe_owner(s->p->name); /* no callbacks into a plugin being torn down */
 		if (s->state == MM_PLUGIN_ACTIVE && s->p->fini) s->p->fini(s->priv);
 		ipc_unregister_owner(s->p->name);
 		if (s->dl) dlclose(s->dl);
