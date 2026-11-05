@@ -509,6 +509,10 @@ int player_seek_ms(int64_t ms, int relative, char *err, size_t errlen)
 	}
 	flush();
 	atomic_store(&P.dec_frames, from_frames);
+	/* Report the target at once; until the sink applies the flush (one
+	 * callback) it would still count the old position. The START marker
+	 * then sets it exactly. */
+	atomic_store(&P.item_frames, from_frames);
 	push_mark(MM_MARK_START, P.spk.item, from_frames);
 	if (reader_start() != 0) {
 		snprintf(err, errlen, "could not restart reader");
@@ -706,9 +710,9 @@ static int v_status(void *priv, struct mm_verb_ctx *c)
 	if (k->info.duration_ms)
 		snprintf(dur, sizeof(dur), "%.3f", (double)k->info.duration_ms / 1000.0);
 	snprintf(c->reply, c->reply_len,
-	         "state: %s\nuri: %s\nsource: %s\nposition: %.3f\nduration: %s\nseekable: %s\n"
+	         "state: %s\nitem: %u\nuri: %s\nsource: %s\nposition: %.3f\nduration: %s\nseekable: %s\n"
 	         "next: %s\nvolume: %d\nsink: %s\nbuffered: %.3f\nunderruns: %" PRIu64 "\n",
-	         names[P.state], k->uri[0] ? k->uri : "-", k->src_p ? k->src_p->name : "-",
+	         names[P.state], k->stream ? k->item : 0u, k->uri[0] ? k->uri : "-", k->src_p ? k->src_p->name : "-",
 	         (double)pos / 1000.0, dur,
 	         (k->info.flags & MM_STREAM_SEEKABLE) ? "yes" : "no", next,
 	         P.vol, P.sink_p ? P.sink_p->name : "-",

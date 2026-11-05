@@ -215,6 +215,7 @@ static int seeking(void)
 	CHECK(wait_buffered(9600) == 0, "audio is queued");
 	pull(480);
 	CHECK(player_seek_ms(5000, 0, err, sizeof(err)) == 0, "absolute seek");
+	CHECK(player_position_ms() == 5000, "position reports the target at once, before the sink's next callback");
 	pull(0); /* the sink applies the flush on its next callback */
 	CHECK(player_buffered_frames() < 9600, "the next callback discards pre-seek audio");
 	CHECK(wait_buffered(480) == 0, "audio after the seek is queued");

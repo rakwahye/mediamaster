@@ -52,11 +52,20 @@ ifeq ($(HAVE_PIPEWIRE),1)
   PLUGINS += pipewire
 endif
 
+# mpris on sd-bus: libsystemd, or basu where systemd is absent.
+SDBUS_PC := $(shell pkg-config --exists libsystemd && echo libsystemd || (pkg-config --exists basu && echo basu))
+ifneq ($(SDBUS_PC),)
+  PLUGINS += mpris
+endif
+
 # Per-plugin extras.
 LIBS_raw := -lm
 CFLAGS_ffmpeg := -D_GNU_SOURCE
 CFLAGS_pipewire := $(shell pkg-config --cflags libpipewire-0.3 2>/dev/null) -std=gnu99 -Wno-pedantic -Wno-missing-prototypes
 LIBS_pipewire := $(shell pkg-config --libs libpipewire-0.3 2>/dev/null)
+CFLAGS_mpris := $(shell pkg-config --cflags $(SDBUS_PC) 2>/dev/null) $(if $(filter basu,$(SDBUS_PC)),-DMM_HAVE_BASU) \
+                -std=gnu99 -D_GNU_SOURCE -Wno-pedantic
+LIBS_mpris := $(shell pkg-config --libs $(SDBUS_PC) 2>/dev/null)
 
 HOST_SRC := main.c log.c config.c paths.c ipc.c loader.c builtins.c ring.c player.c queue.c events.c
 HOST_OBJ := $(addprefix $(BUILD)/host/,$(HOST_SRC:.c=.o)) \
@@ -147,6 +156,7 @@ unit: $(TESTS) $(PLUGIN_SO)
 
 smoke: all
 	@sh tests/smoke.sh $(BUILD)
+	@sh tests/mpris.sh $(BUILD)
 
 # Sequential: smoke times real playback and must not compete with unit tests.
 test: unit
