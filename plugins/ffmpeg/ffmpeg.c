@@ -16,10 +16,8 @@
  *
  * Folders are lists (catalog): `browse`, `queue add` and `play` of a
  * folder take the audio files in it and in its subfolders, in natural
- * order (2 before 10); "file:" alone is the music folder, and
- * "file:search:<words>" finds audio files under it whose path holds every
- * word, in any case and order, from an index kept up to date in the
- * background (index.c), never by walking the disk.
+ * order (2 before 10). Your music folder as a whole, and search in it,
+ * belong to the library plugin.
  *
  * Children get an empty signal mask and default dispositions (the daemon
  * blocks its signals for signalfd), /dev/null on stdin, and nothing else
@@ -30,11 +28,9 @@
  *   ffmpeg.ffprobe      = ffprobe
  *   ffmpeg.probe_ms     = 5000   give up on ffprobe after this (→ live)
  *   ffmpeg.net_timeout  = 15     seconds; ffmpeg -rw_timeout for http(s)
- *   ffmpeg.music_dir    = ~/Music   what "file:" lists and search indexes
- *   ffmpeg.index        = $XDG_CACHE_HOME/mediamaster/music.idx, or "off" */
+ */
 
 #include "mm_plugin.h"
-#include "index.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -58,10 +54,6 @@ extern char **environ;
 
 struct ff_priv {
 	const struct mm_host *h;
-	pthread_mutex_t idx_lock; /* idx: reload replaces it while a search may run */
-	struct ffidx *idx;  /* NULL with ffmpeg.index = off */
-	char root[4096];    /* the music folder it indexes */
-	char saved[4096];   /* where the index is kept */
 };
 
 struct ff_stream {
@@ -511,57 +503,22 @@ static void ff_close(void *stream)
 	free(s);
 }
 
-static void music_dir(const struct ff_priv *p, char *dir, size_t cap)
+/* What a folder listing offers as tracks. Anything else in it is skipped
+ * rather than offered and failing at play. */
+static int audio_name(const char *name)
 {
-	const char *home = getenv("HOME");
-	const char *music = p->h->config_get(p->h, "music_dir");
-	if (music && *music) snprintf(dir, cap, "%s", music);
-	else snprintf(dir, cap, "%s/Music", home ? home : "");
-}
-
-/* Make the folders above `file`, like mkdir -p. */
-static void make_parents(const char *file)
-{
-	char d[4096];
-	snprintf(d, sizeof(d), "%s", file);
-	for (char *s = d + 1; *s; s++) {
-		if (*s != '/') continue;
-		*s = '\0';
-		mkdir(d, 0700);
-		*s = '/';
+	static const char *const ext[] = {
+		"flac", "mp3", "ogg", "oga", "opus", "m4a", "m4b", "aac", "wav", "aif", "aiff",
+		"wv", "ape", "mka", "mpc", "alac", "wma", "dsf", "dff", "tta", "spx", NULL
+	};
+	const char *dot = strrchr(name, '.');
+	if (!dot || dot == name) return 0;
+	for (const char *const *e = ext; *e; e++) {
+		const char *a = dot + 1, *b = *e;
+		while (*a && *b && (*a | 0x20) == *b) { a++; b++; }
+		if (!*a && !*b) return 1;
 	}
-}
-
-/* Open, or reopen for a new folder or file, the music index. */
-static void index_setup(struct ff_priv *p)
-{
-	const struct mm_host *h = p->h;
-	char root[4096], saved[4096];
-	const char *v = h->config_get(h, "index");
-	int off = v && !strcmp(v, "off");
-
-	music_dir(p, root, sizeof(root));
-	if (v && *v && !off) {
-		snprintf(saved, sizeof(saved), "%s", v);
-	} else {
-		const char *xdg = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
-		if (xdg && *xdg) snprintf(saved, sizeof(saved), "%s/mediamaster/music.idx", xdg);
-		else snprintf(saved, sizeof(saved), "%s/.cache/mediamaster/music.idx", home ? home : "");
-	}
-	pthread_mutex_lock(&p->idx_lock);
-	if (p->idx && !off && !strcmp(root, p->root) && !strcmp(saved, p->saved)) {
-		ffidx_rescan(p->idx); /* same folder: bring it up to date */
-	} else {
-		ffidx_close(p->idx);
-		p->idx = NULL;
-		snprintf(p->root, sizeof(p->root), "%s", root);
-		snprintf(p->saved, sizeof(p->saved), "%s", saved);
-		if (!off) {
-			make_parents(saved);
-			p->idx = ffidx_open(h, root, saved);
-		}
-	}
-	pthread_mutex_unlock(&p->idx_lock);
+	return 0;
 }
 
 static int ff_init(const struct mm_host *h, void **priv)
@@ -569,23 +526,13 @@ static int ff_init(const struct mm_host *h, void **priv)
 	struct ff_priv *p = calloc(1, sizeof(*p));
 	if (!p) return -1;
 	p->h = h;
-	pthread_mutex_init(&p->idx_lock, NULL);
-	index_setup(p);
 	*priv = p;
 	return 0;
 }
 
-static void ff_reload(void *priv)
-{
-	index_setup(priv);
-}
-
 static void ff_fini(void *priv)
 {
-	struct ff_priv *p = priv;
-	ffidx_close(p->idx);
-	pthread_mutex_destroy(&p->idx_lock);
-	free(p);
+	free(priv);
 }
 
 static const struct mm_source_ops s_source = {
@@ -612,24 +559,16 @@ static int visible(const struct dirent *d)
 	return d->d_name[0] != '.';
 }
 
-
 static int ff_list(void *priv, const char *uri, uint32_t flags, mm_item_fn emit, void *ctx,
                    char *err, size_t errlen)
 {
-	struct ff_priv *p = priv;
+	(void)priv;
 	(void)flags; /* a listing costs the same either way */
 	char input[4096], dir[4096];
 	int is_net;
 
-	if (!strncmp(uri, "file:search:", 12)) {
-		pthread_mutex_lock(&p->idx_lock);
-		if (p->idx) ffidx_search(p->idx, uri + 12, emit, ctx);
-		pthread_mutex_unlock(&p->idx_lock);
-		return 0;
-	}
-	if (!strcmp(uri, "file:") || !strcmp(uri, "file://")) {
-		music_dir(p, dir, sizeof(dir));
-	} else {
+	if (!strncmp(uri, "file:search:", 12)) return MM_NOT_A_LIST; /* the library searches */
+	{
 		if (uri_to_input(uri, input, sizeof(input), &is_net) != 0) {
 			snprintf(err, errlen, "not a usable path or URL: %s", uri);
 			return -1;
@@ -669,7 +608,7 @@ static int ff_list(void *priv, const char *uri, uint32_t flags, mm_item_fn emit,
 			if (stat(path, &st) != 0) continue;
 			struct mm_item it = { 0, path, ents[i]->d_name, NULL, NULL, 0 };
 			if (pass == 0 && S_ISDIR(st.st_mode) && !ancestor(path, here)) it.kind = MM_ITEM_LIST;
-			else if (pass == 1 && S_ISREG(st.st_mode) && ffidx_audio_name(ents[i]->d_name)) it.kind = MM_ITEM_TRACK;
+			else if (pass == 1 && S_ISREG(st.st_mode) && audio_name(ents[i]->d_name)) it.kind = MM_ITEM_TRACK;
 			else continue;
 			stop = emit(ctx, &it) != 0;
 		}
@@ -690,7 +629,6 @@ static const struct mm_plugin s_plugin = {
 	.schemes = "file,http,https",
 	.init = ff_init,
 	.fini = ff_fini,
-	.reload = ff_reload,
 	.source = &s_source,
 	.catalog = &s_catalog,
 };

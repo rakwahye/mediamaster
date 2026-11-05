@@ -32,7 +32,7 @@ M="$B/mmctl"
 P="playerctl -p mediamaster"
 
 "$B/mediamaster" -c /dev/null -o "host.socket=$MM_SOCK" -o "host.plugin_dir=$B/plugins" \
-	-o host.sink=null -o host.builtins=1 -o ffmpeg.index=off 2>"$T/log" &
+	-o host.sink=null -o host.builtins=1 -o library.index=off 2>"$T/log" &
 PID=$!
 i=0
 until playerctl -l 2>/dev/null | grep -qx mediamaster; do

@@ -122,7 +122,10 @@ if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
 	# folders are lists: subfolders first, then audio files in natural order
 	A="$T/lib/Album"
 	mkdir -p "$A/CD2" "$T/lib/Other"
-	for f in "2 two.flac" "10 ten.FLAC" ".hidden.flac" "CD2/1 a.flac"; do cp "$T/tone one.flac" "$A/$f"; done
+	# tagged as one album, LP by Osc: 2 and 10 on disc 1, "1 a" on disc 2
+	tag() { ffmpeg -v error -i "$T/tone one.flac" -c copy -metadata album=LP -metadata title="$2" \
+	        -metadata track="$3" -metadata disc="$4" "$A/$1" -y || fail "fixture $1"; }
+	tag "2 two.flac" Two 2 1; tag "10 ten.FLAC" Ten 10 1; tag ".hidden.flac" Hidden 1 1; tag "CD2/1 a.flac" A 1 2
 	echo text >"$A/notes.txt"
 	ln -s .. "$A/up"            # a loop back up the tree
 	ln -s "$T/lib" "$A/CD2/top" # and another, further down
@@ -131,23 +134,25 @@ if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
 		"$A/CD2" "$A/2 two.flac" "$A/10 ten.FLAC" >"$T/want"
 	cmp -s "$T/br" "$T/want" || fail "browse: $(cat "$T/br")"
 	if "$MMCTL" browse "$A/2 two.flac" >/dev/null 2>&1; then fail "a file is not a list"; fi
-	printf 'ffmpeg.music_dir = %s\n' "$T/lib" >>"$T/config"
-	"$MMCTL" reload >/dev/null # queued: give it a moment
+	printf 'library.music_dir = %s\n' "$T/lib" >>"$T/config"
+	"$MMCTL" reload >/dev/null # queued, and the library scans in the background
 	i=0
-	until "$MMCTL" browse file: 2>/dev/null | cut -f2 | tr '\n' ' ' | grep -qx "$A $T/lib/Other "; do
-		i=$((i + 1)); [ $i -lt 30 ] || fail "file: is the music folder: $("$MMCTL" browse file:)"
+	until "$MMCTL" library | grep -q '3 files, 3 with tags'; do
+		i=$((i + 1)); [ $i -lt 100 ] || fail "library: $("$MMCTL" library)"
 		sleep 0.1
 	done
+	[ -s "$T/cache/mediamaster/library.idx" ] || fail "the index is not kept in the cache"
+	"$MMCTL" browse lib: | cut -f2 | tr '\n' ' ' | grep -qx "lib:artists lib:albums " || fail "lib: top"
+	"$MMCTL" browse lib:artists | grep -qx "list	lib:artist:Osc	Osc	-	-	-" || fail "artists: $("$MMCTL" browse lib:artists)"
+	"$MMCTL" browse lib:artist:Osc | grep -qx "list	lib:album:Osc/LP	LP	Osc	-	-" || fail "albums: $("$MMCTL" browse lib:artist:Osc)"
+	"$MMCTL" browse lib:album:Osc/LP | cut -f3 | tr '\n' ' ' | grep -qx "Two Ten A " ||
+		fail "album by disc and track: $("$MMCTL" browse lib:album:Osc/LP)"
 	"$MMCTL" queue clear >/dev/null
 	"$MMCTL" queue add "$A" | grep -qx 'ok added 1-3' || fail "queue add of a folder"
 	"$MMCTL" queue | sed -n 's/^.. *[0-9]*  //p' | tr '\n' '|' |
 		grep -qx "$A/CD2/1 a.flac|$A/2 two.flac|$A/10 ten.FLAC|" || fail "folder order: $("$MMCTL" queue)"
-	i=0 # the index of the new music folder is built in the background
-	until "$MMCTL" search TWO | grep -qx "track	$A/2 two.flac	2 two.flac	-	-	-"; do
-		i=$((i + 1)); [ $i -lt 50 ] || fail "search: $("$MMCTL" search TWO)"
-		sleep 0.1
-	done
-	[ -s "$T/cache/mediamaster/music.idx" ] || fail "the index is not kept in the cache"
+	"$MMCTL" search TWO | grep -qx "track	$A/2 two.flac	Two	Osc	LP	0:01" || fail "search: $("$MMCTL" search TWO)"
+	"$MMCTL" search osc lp | wc -l | grep -qx 3 || fail "search: by tags"
 	"$MMCTL" search album cd2 | cut -f2 | grep -qx "$A/CD2/1 a.flac" || fail "search: every word, in the path"
 	"$MMCTL" search zzz | grep -qx "no results" || fail "search without hits"
 	"$MMCTL" queue clear >/dev/null

@@ -44,9 +44,9 @@ PLUG_CFLAGS := -std=c99 -pedantic $(WARN) $(OPT) $(SAN_FLAGS) -D_POSIX_C_SOURCE=
 PLUG_LDFLAGS := -shared $(SAN_FLAGS)
 
 # Built in (no dependencies) and also built as .so.
-PLUGINS_STATIC := null raw ffmpeg
+PLUGINS_STATIC := null raw ffmpeg library
 # Shared objects; pipewire only when its headers are installed.
-PLUGINS := null raw ffmpeg
+PLUGINS := null raw ffmpeg library
 HAVE_PIPEWIRE := $(shell pkg-config --exists libpipewire-0.3 && echo 1)
 ifeq ($(HAVE_PIPEWIRE),1)
   PLUGINS += pipewire
@@ -144,11 +144,11 @@ $(T)/test-events: tests/events_test.c $(PLAYER_DEPS) $(BUILD)/static/raw.o $(HDR
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
 
-$(T)/test-ffidx: tests/ffidx_test.c plugins/ffmpeg/index.c plugins/ffmpeg/index.h $(HDRS) tests/check.h
+$(T)/test-libidx: tests/libidx_test.c plugins/library/index.c plugins/library/probe.c $(wildcard plugins/library/*.h) $(HDRS) tests/check.h
 	@mkdir -p $(@D)
-	$(CC) $(TEST_CFLAGS) -Iplugins/ffmpeg $(filter %.c,$^) -lpthread -o $@
+	$(CC) $(TEST_CFLAGS) -Iplugins/library $(filter %.c,$^) -lpthread -o $@
 
-TESTS := $(T)/test-ffidx $(T)/test-events $(T)/test-queue $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player $(T)/test-ffmpeg
+TESTS := $(T)/test-libidx $(T)/test-events $(T)/test-queue $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player $(T)/test-ffmpeg
 
 unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-config
@@ -159,7 +159,7 @@ unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-queue
 	@$(T)/test-events
 	@$(T)/test-ffmpeg
-	@$(T)/test-ffidx
+	@$(T)/test-libidx
 
 smoke: all
 	@sh tests/smoke.sh $(BUILD)
