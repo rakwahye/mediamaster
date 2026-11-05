@@ -10,6 +10,12 @@
  * without the lock, which is safe because nothing else replaces or frees
  * it.
  *
+ * A first scan of a big or slow drive takes minutes. So that it is never
+ * lost or invisible, the scan checkpoints every CHECKPOINT_S: what it has
+ * scanned, plus what the previous index knew of the folders it has not
+ * reached yet, becomes the current index and is saved. Stopping
+ * mid-scan saves the same, and the next scan carries on from there.
+ *
  * Saved form, one entry per line (names with a line break are skipped):
  *   mmidx 1 <root>
  *   D <sec> <nsec> <path below root, "" for the root>
@@ -29,6 +35,7 @@
 
 #define MAX_DEPTH 16
 #define MAX_DIRS 200000
+#define CHECKPOINT_S 15 /* default */
 
 struct dir {
 	char *rel;
@@ -50,6 +57,7 @@ struct ffidx {
 	pthread_mutex_t lock;   /* cur, the stats, want, running, stop */
 	struct snap *cur;
 	int want, running, stop;
+	int checkpoint_s;
 	long dirs_read, scans;
 	pthread_t th;
 	int th_on;
@@ -132,6 +140,42 @@ static const struct dir *find_dir(const struct snap *s, const char *rel)
 	return bsearch(&key, s->v, s->n, sizeof(*s->v), by_rel);
 }
 
+/* Deep copy of d into s. */
+static int dir_copy(struct snap *s, const struct dir *d)
+{
+	struct dir *c = snap_add(s, d->rel, d->sec, d->nsec);
+	if (!c) return -1;
+	for (size_t k = 0; k < d->nfiles; k++)
+		if (push(&c->files, &c->nfiles, d->files[k]) != 0) return -1;
+	for (size_t k = 0; k < d->nsubs; k++)
+		if (push(&c->subs, &c->nsubs, d->subs[k]) != 0) return -1;
+	s->files += (long)d->nfiles;
+	return 0;
+}
+
+/* What a scan knows so far: every folder it has reached (`part`, in scan
+ * order), and from `old` those it has not, sorted. NULL if out of memory. */
+static struct snap *merged(const struct snap *part, const struct snap *old)
+{
+	struct snap *m = calloc(1, sizeof(*m));
+	if (!m) return NULL;
+	for (size_t i = 0; i < part->n; i++)
+		if (dir_copy(m, &part->v[i]) != 0) goto oom;
+	if (m->n) qsort(m->v, m->n, sizeof(*m->v), by_rel);
+	size_t reached = m->n;
+	for (size_t i = 0; old && i < old->n; i++) {
+		struct dir key;
+		key.rel = old->v[i].rel;
+		if (reached && bsearch(&key, m->v, reached, sizeof(*m->v), by_rel)) continue;
+		if (dir_copy(m, &old->v[i]) != 0) goto oom;
+	}
+	if (m->n) qsort(m->v, m->n, sizeof(*m->v), by_rel);
+	return m;
+oom:
+	snap_free(m);
+	return NULL;
+}
+
 /* ------------------------------------------------------------------ saved form */
 
 static struct snap *load(const char *path, const char *root)
@@ -189,8 +233,10 @@ static void save(const struct ffidx *x, const struct snap *s)
 
 struct scan {
 	struct ffidx *x;
-	const struct snap *old;
+	const struct snap *old; /* the index the scan started from */
 	struct snap *new;
+	struct snap *shown;     /* the last checkpoint made current, if any */
+	struct timespec last;   /* when it was made */
 	/* Folders visited, an open-addressing set of (device, inode): a link
 	 * back up the tree, or two links to one folder, is followed once. */
 	struct seen { dev_t dev; ino_t ino; int used; } *seen;
@@ -268,11 +314,34 @@ static int read_dir(struct scan *sc, const char *path, struct dir *d)
 	return 0;
 }
 
+/* Every CHECKPOINT_S: make what is known so far current, and save it. */
+static void checkpoint(struct scan *sc)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	pthread_mutex_lock(&sc->x->lock);
+	int every = sc->x->checkpoint_s;
+	pthread_mutex_unlock(&sc->x->lock);
+	if (now.tv_sec - sc->last.tv_sec < every) return;
+	sc->last = now;
+	struct snap *m = merged(sc->new, sc->old);
+	if (!m) return;
+	save(sc->x, m);
+	pthread_mutex_lock(&sc->x->lock);
+	struct snap *prev = sc->x->cur;
+	sc->x->cur = m;
+	pthread_mutex_unlock(&sc->x->lock);
+	if (prev != sc->old) snap_free(prev); /* an earlier checkpoint */
+	sc->shown = m;
+	sc->x->h->log(sc->x->h, MM_LOG_INFO, "music index: %zu folders so far, saved", sc->new->n);
+}
+
 static void visit(struct scan *sc, const char *rel, int depth)
 {
 	char path[8192];
 	struct stat st;
 	if (sc->fail || depth > MAX_DEPTH || sc->new->n >= MAX_DIRS || stopping(sc->x)) return;
+	checkpoint(sc);
 	snprintf(path, sizeof(path), "%s%s%s", sc->x->root, rel[0] ? "/" : "", rel);
 	if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode) || !first_visit(sc, &st)) return;
 
@@ -318,17 +387,29 @@ static void *scanner(void *arg)
 		sc.x = x;
 		sc.old = x->cur; /* only this thread replaces it */
 		clock_gettime(CLOCK_MONOTONIC, &t0);
+		sc.last = t0;
+		x->h->log(x->h, MM_LOG_INFO, "music index: updating %s (%zu folders saved)", x->root,
+		          sc.old ? sc.old->n : (size_t)0);
 		if ((sc.new = calloc(1, sizeof(*sc.new)))) visit(&sc, "", 0);
 		free(sc.seen);
+		if (sc.new && !sc.fail && stopping(x)) {
+			/* Stopped: keep the progress for next time. */
+			struct snap *m = merged(sc.new, sc.old);
+			if (m) save(x, m);
+			snap_free(m);
+		}
 		if (!sc.new || sc.fail || stopping(x)) {
 			snap_free(sc.new);
-			continue; /* keep what we had */
+			/* The index stays as it is: the old one, or a checkpoint that
+			 * holds all it knew, which then replaces it for good. */
+			if (sc.shown) snap_free((struct snap *)sc.old);
+			continue;
 		}
 		if (sc.new->n) qsort(sc.new->v, sc.new->n, sizeof(*sc.new->v), by_rel);
 		clock_gettime(CLOCK_MONOTONIC, &t1);
 
 		pthread_mutex_lock(&x->lock);
-		struct snap *old = x->cur;
+		struct snap *cur = x->cur; /* old, or the last checkpoint */
 		x->cur = sc.new;
 		x->dirs_read = sc.read;
 		x->scans++;
@@ -336,8 +417,9 @@ static void *scanner(void *arg)
 		x->h->log(x->h, MM_LOG_INFO, "music index: %ld files in %zu folders, %ld read, in %ld ms",
 		          sc.new->files, sc.new->n, sc.read,
 		          (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000));
-		if (sc.read || !old || old->n != sc.new->n) save(x, sc.new);
-		snap_free(old);
+		if (sc.read || sc.shown || !sc.old || sc.old->n != sc.new->n) save(x, sc.new);
+		if (cur != sc.old) snap_free(cur);
+		snap_free((struct snap *)sc.old);
 	}
 }
 
@@ -353,9 +435,17 @@ struct ffidx *ffidx_open(const struct mm_host *h, const char *root, const char *
 	while (n > 1 && x->root[n - 1] == '/') x->root[--n] = '\0';
 	snprintf(x->saved, sizeof(x->saved), "%s", saved);
 	pthread_mutex_init(&x->lock, NULL);
+	x->checkpoint_s = CHECKPOINT_S;
 	x->cur = load(x->saved, x->root);
 	ffidx_rescan(x);
 	return x;
+}
+
+void ffidx_checkpoint_every(struct ffidx *x, int seconds)
+{
+	pthread_mutex_lock(&x->lock);
+	x->checkpoint_s = seconds < 0 ? 0 : seconds;
+	pthread_mutex_unlock(&x->lock);
 }
 
 void ffidx_rescan(struct ffidx *x)

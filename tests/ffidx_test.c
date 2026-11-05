@@ -140,6 +140,46 @@ int main(void)
 	x = ffidx_open(&H, ROOT, SAVED);
 	ffidx_close(x);
 
+	/* A warm start stopped mid-scan keeps all it knew. */
+	x = ffidx_open(&H, ROOT, SAVED);
+	CHECK(settle(x, 1, &st) == 0, "full index");
+	long dirs = st.dirs, files = st.files;
+	ffidx_close(x);
+	for (int i = 0; i < 20; i++) {
+		x = ffidx_open(&H, ROOT, SAVED);
+		ffidx_close(x); /* at once, mostly before the scan gets far */
+	}
+	x = ffidx_open(&H, ROOT, SAVED);
+	ffidx_stats(x, &st);
+	CHECK(st.dirs == dirs && st.files == files, "nothing lost to stopped scans");
+	ffidx_close(x);
+
+	/* A long first scan is searchable and saved as it goes. */
+	unlink(SAVED);
+	for (int i = 0; i < 300; i++) {
+		char rel[64];
+		snprintf(rel, sizeof(rel), "Many/%03d", i);
+		if (i == 0) mk("Many");
+		mk(rel);
+		snprintf(rel, sizeof(rel), "Many/%03d/t%03d.flac", i, i);
+		touch(rel);
+	}
+	x = ffidx_open(&H, ROOT, SAVED);
+	ffidx_checkpoint_every(x, 0);
+	int seen_partial = 0;
+	for (int i = 0; i < 4000 && !seen_partial; i++) {
+		ffidx_stats(x, &st);
+		if (!st.scans && st.files > 0) seen_partial = 1; /* a checkpoint before the end */
+		else if (st.scans) break;
+		struct timespec ts = { 0, 100000 };
+		nanosleep(&ts, NULL);
+	}
+	if (seen_partial) CHECK(access(SAVED, R_OK) == 0, "a checkpoint is saved");
+	CHECK(settle(x, 1, &st) == 0 && st.files == files + 300, "then the full index");
+	CHECK(!strcmp(find(x, "t299"), "Many/299/t299.flac|"), "all of it searchable");
+	ffidx_close(x);
+	if (!seen_partial) fprintf(stderr, "  (the scan finished before a checkpoint was seen)\n");
+
 	char cmd[256];
 	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", D);
 	CHECK(system(cmd) == 0, "clean up");

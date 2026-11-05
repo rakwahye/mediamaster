@@ -24,6 +24,10 @@ int ffidx_audio_name(const char *name);
  * scan. @returns the index, or NULL if out of memory. */
 struct ffidx *ffidx_open(const struct mm_host *h, const char *root, const char *saved);
 
+/** Seconds between checkpoints of a running scan (default 15; 0 makes
+ * one at every folder, for tests). */
+void ffidx_checkpoint_every(struct ffidx *x, int seconds);
+
 /** Scan again (on config reload). A scan already running carries on. */
 void ffidx_rescan(struct ffidx *x);
 
