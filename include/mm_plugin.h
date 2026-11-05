@@ -209,8 +209,45 @@ struct mm_sink_ops {
 	void (*stop)(void *priv);
 };
 
+/* ------------------------------------------------------------------ catalog */
+
+enum mm_item_kind {
+	MM_ITEM_TRACK = 1, /* playable: a source opens it */
+	MM_ITEM_LIST  = 2  /* listable: a playlist, album, folder, ... */
+};
+
+/** One entry of a list. Strings may be NULL, and need only last for the
+ * call that hands the item over. */
+struct mm_item {
+	uint32_t kind;        /* enum mm_item_kind */
+	const char *uri;      /* required */
+	const char *title;    /* NULL: shown as the URI */
+	const char *artist;   /* a track's artists, or a list's owner */
+	const char *album;
+	uint64_t duration_ms; /* 0 = unknown */
+};
+
+/** Receives items. @returns 0 for more, nonzero to stop the listing. */
+typedef int (*mm_item_fn)(void *ctx, const struct mm_item *item);
+
+/** catalog `list` result: `uri` is one playable thing, not a list. */
+#define MM_NOT_A_LIST 1
+
+/** What is inside things: playlists, albums, folders, a library. The host
+ * uses it for `browse`, and to queue or play a whole list.
+ *
+ * `list` runs on a host control thread and may block on the network. */
+struct mm_catalog_ops {
+	/** Hand every item inside `uri` (one of the plugin's schemes) to
+	 * emit(ctx, item), in order, before returning; stop early when emit
+	 * says so. "<scheme>:" with nothing after it is the plugin's top level.
+	 * @returns 0; MM_NOT_A_LIST for a URI that is a single track, decided
+	 * without going to the network; any other nonzero with the reason in
+	 * err. */
+	int (*list)(void *priv, const char *uri, mm_item_fn emit, void *ctx, char *err, size_t errlen);
+};
+
 /* Interface ops tables not defined yet: leave NULL. */
-struct mm_catalog_ops;
 struct mm_identify_ops;
 struct mm_enrich_ops;
 struct mm_observer_ops;

@@ -28,7 +28,7 @@
 
 #define IPC_MAX_ARGS 64
 #define IPC_FRAME_MAX 65536
-#define IPC_REPLY_MAX 16384
+#define IPC_REPLY_MAX (1 << 20) /* a long playlist through browse */
 
 /** Register `verb` for `owner`. `help` is "ARGS\tdescription".
  * @returns 0, or -1 if taken, reserved, malformed, or the table is full. */

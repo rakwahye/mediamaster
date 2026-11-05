@@ -6,6 +6,7 @@
  * player never calls back into the queue, so this cannot invert. */
 
 #include "queue.h"
+#include "catalog.h"
 #include "ipc.h"
 #include "log.h"
 #include "player.h"
@@ -103,26 +104,46 @@ long queue_add(const char *uri)
 	return pos;
 }
 
-int queue_play_uri(const char *uri, char *err, size_t errlen)
+/* Lock held. Take out [at, at + n), as if never inserted. */
+static void remove_block(size_t at, size_t n)
 {
+	for (size_t i = 0; i < n; i++) free(Q.uri[at + i]);
+	memmove(Q.uri + at, Q.uri + at + n, (Q.n - at - n) * sizeof(*Q.uri));
+	Q.n -= n;
+	if (Q.cur >= (long)(at + n)) Q.cur -= (long)n;
+	if (Q.pre_valid && Q.pre >= (long)(at + n)) Q.pre -= (long)n;
+}
+
+int queue_play_list(char *const *uris, size_t n, char *err, size_t errlen)
+{
+	if (!n) {
+		snprintf(err, errlen, "nothing to play");
+		return -1;
+	}
 	pthread_mutex_lock(&Q.lock);
 	/* After the cursor; if the cursor's item was removed, at its slot. */
 	size_t at = Q.cur < 0 ? Q.n : (size_t)(Q.cur + (Q.cur_removed ? 0 : 1));
 	if (at > Q.n) at = Q.n;
+	size_t in = 0;
+	while (in < n && insert_at(at + in, uris[in]) == 0) in++;
 	int rc = -1;
-	if (insert_at(at, uri) != 0) {
+	if (in < n) {
 		snprintf(err, errlen, "queue full");
-	} else if ((rc = play_index((long)at, err, errlen)) != 0) {
-		/* Not playable: do not leave it in the queue. */
-		free(Q.uri[at]);
-		memmove(Q.uri + at, Q.uri + at + 1, (Q.n - at - 1) * sizeof(*Q.uri));
-		Q.n--;
-		if (Q.cur > (long)at) Q.cur--;
-		if (Q.pre_valid && Q.pre > (long)at) Q.pre--;
+	} else {
+		rc = play_index((long)at, err, errlen);
+	}
+	if (rc != 0) { /* not playable: leave the queue as it was */
+		remove_block(at, in);
 		edited();
 	}
 	pthread_mutex_unlock(&Q.lock);
 	return rc;
+}
+
+int queue_play_uri(const char *uri, char *err, size_t errlen)
+{
+	char *one[1] = { (char *)uri };
+	return queue_play_list(one, 1, err, errlen);
 }
 
 int queue_play_at(long pos, char *err, size_t errlen)
@@ -333,9 +354,12 @@ static int v_play(void *priv, struct mm_verb_ctx *c)
 			return MM_ERR;
 		}
 	} else {
-		char uri[2048];
+		char uri[2048], **v;
 		join_args(c->argc, c->argv, 1, uri, sizeof(uri));
-		if (queue_play_uri(uri, err, sizeof(err)) != 0) {
+		long n = catalog_tracks(uri, &v, QUEUE_MAX, err, sizeof(err));
+		int rc = n < 0 ? -1 : queue_play_list(v, (size_t)n, err, sizeof(err));
+		if (n >= 0) catalog_free(v, n);
+		if (rc != 0) {
 			snprintf(c->reply, c->reply_len, "%s", err);
 			return MM_ERR;
 		}
@@ -379,18 +403,31 @@ static int v_queue(void *priv, struct mm_verb_ctx *c)
 			snprintf(c->reply, c->reply_len, "usage: queue add <uri>...");
 			return MM_ERR;
 		}
+		/* Each argument is a track, or a list that stands for its tracks. */
 		long first = -1, last = -1;
 		for (int i = 2; i < c->argc; i++) {
-			last = queue_add(c->argv[i]);
-			if (last < 0) {
+			char **v;
+			long n = catalog_tracks(c->argv[i], &v, QUEUE_MAX, err, sizeof(err));
+			if (n < 0) {
+				snprintf(c->reply, c->reply_len, "%s", err);
+				return MM_ERR;
+			}
+			for (long k = 0; k < n && last != -2; k++) {
+				long at = queue_add(v[k]);
+				if (at < 0) last = -2;
+				else if (first < 0) first = last = at;
+				else last = at;
+			}
+			catalog_free(v, n);
+			if (last == -2) {
 				snprintf(c->reply, c->reply_len, "queue full");
 				return MM_ERR;
 			}
-			if (first < 0) first = last;
 		}
-		if (first == last) snprintf(c->reply, c->reply_len, "added at %ld", first);
+		if (first < 0) snprintf(c->reply, c->reply_len, "nothing to add");
+		else if (first == last) snprintf(c->reply, c->reply_len, "added at %ld", first);
 		else snprintf(c->reply, c->reply_len, "added %ld-%ld", first, last);
-		return MM_OK;
+		return first < 0 ? MM_ERR : MM_OK;
 	}
 	if (!strcmp(sub, "rm") && c->argc == 3 && parse_pos(c->argv[2], &pos) == 0) {
 		if (queue_remove(pos) != 0) {

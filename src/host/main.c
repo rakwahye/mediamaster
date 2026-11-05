@@ -18,6 +18,7 @@
 #include "paths.h"
 #include "player.h"
 #include "queue.h"
+#include "catalog.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -199,6 +200,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	if (queue_init() != 0) LOGW(TAG, "some queue verbs could not be registered");
+	if (catalog_init() != 0) LOGW(TAG, "browse could not be registered");
 
 	const char *sock = config_get_str("host.socket", mm_paths_socket());
 	if (ipc_start(sock) != 0) {

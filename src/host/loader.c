@@ -274,6 +274,20 @@ int loader_find_source(const char *scheme, const struct mm_plugin **p, void **pr
 	return -1;
 }
 
+int loader_find_catalog(const char *scheme, const struct mm_plugin **p, void **priv)
+{
+	for (size_t i = 0; i < s_n; i++) {
+		const struct slot *s = &s_slots[i];
+		if (s->state != MM_PLUGIN_ACTIVE || !s->p->catalog || !s->p->catalog->list || !s->p->schemes) continue;
+		if (in_list(s->p->schemes, scheme)) {
+			*p = s->p;
+			*priv = s->priv;
+			return 0;
+		}
+	}
+	return -1;
+}
+
 int loader_find_sink(const char *name, const struct mm_plugin **p, void **priv)
 {
 	for (size_t i = 0; i < s_n; i++) {

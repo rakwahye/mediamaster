@@ -3,12 +3,14 @@
  * Items are short tones whose frequency names them, so "what is playing"
  * is read from the player's current URI. */
 #include "queue.h"
+#include "catalog.h"
 #include "player.h"
 #include "config.h"
 #include "ipc.h"
 #include "loader.h"
 #include "check.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -23,6 +25,60 @@ static const struct mm_sink_ops ts_ops = { .start = ts_start, .stop = ts_stop };
 static const struct mm_plugin testsink = { .abi = MM_ABI, .name = "testsink", .init = ts_init, .sink = &ts_ops };
 
 static float s_buf[MM_PCM_CHANNELS * 4800];
+
+/* A catalog for "box:" URIs whose items are raw tones:
+ *   box:            top: box:a, box:empty
+ *   box:a           sine:300, list box:b, sine:400, list box:bad, list box:loop
+ *   box:b           sine:350
+ *   box:bad         fails
+ *   box:loop        contains itself
+ *   box:empty       nothing
+ *   box:t           a track (not a list)
+ *   box:dud         a list whose only track no source plays */
+static int g_lists; /* list calls, to see expansion stop */
+static int emit_list(mm_item_fn emit, void *ctx, uint32_t kind, const char *uri, const char *title)
+{
+	struct mm_item it = { kind, uri, title, "Artist\tTab", NULL, kind == MM_ITEM_TRACK ? 61000 : 0 };
+	return emit(ctx, &it);
+}
+static int box_list(void *priv, const char *uri, mm_item_fn emit, void *ctx, char *err, size_t errlen)
+{
+	(void)priv;
+	g_lists++;
+	if (!strcmp(uri, "box:")) {
+		emit_list(emit, ctx, MM_ITEM_LIST, "box:a", "A");
+		emit_list(emit, ctx, MM_ITEM_LIST, "box:empty", "Empty");
+	} else if (!strcmp(uri, "box:a")) {
+		if (emit_list(emit, ctx, MM_ITEM_TRACK, "sine:300:5", "Three")) return 0;
+		if (emit_list(emit, ctx, MM_ITEM_LIST, "box:b", "B")) return 0;
+		if (emit_list(emit, ctx, MM_ITEM_TRACK, "sine:400:5", "Four")) return 0;
+		if (emit_list(emit, ctx, MM_ITEM_LIST, "box:bad", "Bad")) return 0;
+		emit_list(emit, ctx, MM_ITEM_LIST, "box:loop", "Loop");
+	} else if (!strcmp(uri, "box:b")) {
+		emit_list(emit, ctx, MM_ITEM_TRACK, "sine:350:5", "Three-fifty");
+	} else if (!strcmp(uri, "box:loop")) {
+		emit_list(emit, ctx, MM_ITEM_LIST, "box:loop", "Loop");
+	} else if (!strcmp(uri, "box:dud")) {
+		emit_list(emit, ctx, MM_ITEM_TRACK, "nosuch:x", "Dud");
+	} else if (!strcmp(uri, "box:t")) {
+		return MM_NOT_A_LIST;
+	} else if (strcmp(uri, "box:empty") != 0) {
+		snprintf(err, errlen, "no such box: %s", uri);
+		return -1;
+	}
+	return 0;
+}
+static int box_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
+static const struct mm_catalog_ops box_ops = { .list = box_list };
+static const struct mm_plugin boxcat = { .abi = MM_ABI, .name = "box", .schemes = "box", .init = box_init, .catalog = &box_ops };
+
+static char R[1 << 16];
+static int run(const char *a0, const char *a1, const char *a2)
+{
+	char *argv[4] = { (char *)a0, (char *)a1, (char *)a2, NULL };
+	int argc = a2 ? 3 : a1 ? 2 : 1;
+	return ipc_dispatch(argc, argv, NULL, 0, R, sizeof(R));
+}
 
 static const char *now(void)
 {
@@ -219,15 +275,62 @@ static int verbs(void)
 	return 0;
 }
 
+static int lists(void)
+{
+	char err[256], **v;
+	queue_clear();
+
+	/* Expansion: in order, into nested lists, past a broken one and a loop. */
+	g_lists = 0;
+	long n = catalog_tracks("box:a", &v, 1000, err, sizeof(err));
+	CHECK(n == 3 && !strcmp(v[0], "sine:300:5") && !strcmp(v[1], "sine:350:5") && !strcmp(v[2], "sine:400:5"),
+	      "a list's tracks, nested ones in place, a failing one skipped");
+	CHECK(g_lists > 3 && g_lists < 20, "a list containing itself stops at the depth limit");
+	catalog_free(v, n);
+	CHECK((n = catalog_tracks("box:a", &v, 2, err, sizeof(err))) == 2, "capped at max");
+	catalog_free(v, n);
+	CHECK((n = catalog_tracks("box:t", &v, 10, err, sizeof(err))) == 1 && !strcmp(v[0], "box:t"), "a track is itself");
+	catalog_free(v, n);
+	CHECK((n = catalog_tracks("sine:500", &v, 10, err, sizeof(err))) == 1, "no catalog for the scheme: itself");
+	catalog_free(v, n);
+	CHECK(catalog_tracks("box:empty", &v, 10, err, sizeof(err)) == 0, "an empty list is no tracks");
+	free(v);
+	CHECK(catalog_tracks("box:nope", &v, 10, err, sizeof(err)) < 0 && strstr(err, "no such box"), "the plugin's error");
+
+	/* browse */
+	CHECK(run("browse", "box:", NULL) == MM_REPLY_RAW && !strcmp(R, "list\tbox:a\tA\tArtist Tab\t-\t-\nlist\tbox:empty\tEmpty\tArtist Tab\t-\t-\n"),
+	      "the top level");
+	CHECK(run("browse", "box:b", NULL) == MM_REPLY_RAW && !strcmp(R, "track\tsine:350:5\tThree-fifty\tArtist Tab\t-\t1:01\n"),
+	      "a track line, a tab in a field made a space");
+	CHECK(run("browse", "box:empty", NULL) == MM_REPLY_RAW && !strcmp(R, "empty\n"), "empty");
+	CHECK(run("browse", "box:t", NULL) == MM_ERR && strstr(R, "is a track"), "a track is not browsable");
+	CHECK(run("browse", "nosuch:", NULL) == MM_ERR && strstr(R, "nothing lists"), "unknown scheme");
+
+	/* queue add and play take lists */
+	CHECK(run("queue", "add", "box:a") == MM_OK && !strcmp(R, "added 1-3"), "queue add of a list");
+	CHECK(run("queue", "add", "box:empty") == MM_ERR && strstr(R, "nothing to add"), "an empty list adds nothing");
+	CHECK(run("play", "box:b", NULL) == MM_OK && !strcmp(now(), "sine:350:5") && queue_length() == 4,
+	      "play of a list plays its first track");
+	CHECK(run("play", "box:dud", NULL) == MM_ERR && queue_length() == 4 && !strcmp(now(), "sine:350:5"),
+	      "an unplayable list leaves queue and playback alone");
+	queue_clear();
+	CHECK(run("play", "box:a", NULL) == MM_OK && queue_length() == 3 && queue_cursor() == 1, "play a list into an empty queue");
+	player_stop();
+	queue_clear();
+	return 0;
+}
+
 int main(void)
 {
 	config_override("host.sink=testsink");
 	config_load(NULL);
 	loader_add(&testsink, NULL, "test");
 	loader_add(mm_static_entry_raw(), NULL, "builtin");
+	loader_add(&boxcat, NULL, "test");
 	loader_init_all();
 	CHECK(player_init() == 0, "player");
 	CHECK(queue_init() == 0, "queue");
+	CHECK(catalog_init() == 0, "catalog");
 
 	RUN(verbs);
 	RUN(basics);
@@ -235,6 +338,7 @@ int main(void)
 	RUN(editing);
 	RUN(gapless);
 	RUN(edits_drop_preload);
+	RUN(lists);
 
 	queue_fini();
 	CHECK(!ipc_has_verb("queue"), "fini drops the verbs");

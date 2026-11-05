@@ -23,6 +23,7 @@
  * while joining the reader). */
 
 #include "player.h"
+#include "uri.h"
 #include "config.h"
 #include "ipc.h"
 #include "loader.h"
@@ -316,25 +317,6 @@ static void close_all(void)
 }
 
 /* ------------------------------------------------------------------ control */
-
-/* "scheme:rest" → scheme; a bare path is "file". */
-static void uri_scheme(const char *uri, char *out, size_t cap)
-{
-	const char *c = strchr(uri, ':');
-	size_t n = c ? (size_t)(c - uri) : 0;
-	int ok = n > 0 && n < cap;
-	for (size_t i = 0; ok && i < n; i++) {
-		char ch = uri[i];
-		ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-		     (i && ((ch >= '0' && ch <= '9') || ch == '+' || ch == '-' || ch == '.'));
-	}
-	if (ok) {
-		memcpy(out, uri, n);
-		out[n] = '\0';
-	} else {
-		snprintf(out, cap, "file");
-	}
-}
 
 /* slock held. A newly opened stream enters a slot: what its source said
  * about it before that applies now. */
