@@ -36,15 +36,18 @@ static float s_buf[MM_PCM_CHANNELS * 4800];
  *   box:t           a track (not a list)
  *   box:dud         a list whose only track no source plays */
 static int g_lists; /* list calls, to see expansion stop */
+static uint32_t g_flags; /* flags of the last list call */
 static int emit_list(mm_item_fn emit, void *ctx, uint32_t kind, const char *uri, const char *title)
 {
 	struct mm_item it = { kind, uri, title, "Artist\tTab", NULL, kind == MM_ITEM_TRACK ? 61000 : 0 };
 	return emit(ctx, &it);
 }
-static int box_list(void *priv, const char *uri, mm_item_fn emit, void *ctx, char *err, size_t errlen)
+static int box_list(void *priv, const char *uri, uint32_t flags, mm_item_fn emit, void *ctx,
+                    char *err, size_t errlen)
 {
 	(void)priv;
 	g_lists++;
+	g_flags = flags;
 	if (!strcmp(uri, "box:")) {
 		emit_list(emit, ctx, MM_ITEM_LIST, "box:a", "A");
 		emit_list(emit, ctx, MM_ITEM_LIST, "box:empty", "Empty");
@@ -286,6 +289,7 @@ static int lists(void)
 	CHECK(n == 3 && !strcmp(v[0], "sine:300:5") && !strcmp(v[1], "sine:350:5") && !strcmp(v[2], "sine:400:5"),
 	      "a list's tracks, nested ones in place, a failing one skipped");
 	CHECK(g_lists > 3 && g_lists < 20, "a list containing itself stops at the depth limit");
+	CHECK(g_flags == MM_LIST_URIS, "expansion asks for URIs only");
 	catalog_free(v, n);
 	CHECK((n = catalog_tracks("box:a", &v, 2, err, sizeof(err))) == 2, "capped at max");
 	catalog_free(v, n);
@@ -302,6 +306,7 @@ static int lists(void)
 	      "the top level");
 	CHECK(run("browse", "box:b", NULL) == MM_REPLY_RAW && !strcmp(R, "track\tsine:350:5\tThree-fifty\tArtist Tab\t-\t1:01\n"),
 	      "a track line, a tab in a field made a space");
+	CHECK(g_flags == 0, "browse asks for everything");
 	CHECK(run("browse", "box:empty", NULL) == MM_REPLY_RAW && !strcmp(R, "empty\n"), "empty");
 	CHECK(run("browse", "box:t", NULL) == MM_ERR && strstr(R, "is a track"), "a track is not browsable");
 	CHECK(run("browse", "nosuch:", NULL) == MM_ERR && strstr(R, "nothing lists"), "unknown scheme");

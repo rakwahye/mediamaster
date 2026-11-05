@@ -233,6 +233,12 @@ typedef int (*mm_item_fn)(void *ctx, const struct mm_item *item);
 /** catalog `list` result: `uri` is one playable thing, not a list. */
 #define MM_NOT_A_LIST 1
 
+/** catalog `list` flags. */
+enum mm_list_flags {
+	MM_LIST_URIS = 1u << 0 /* only kind and uri are wanted (queueing a list):
+	                        * skip whatever costs extra to fetch */
+};
+
 /** What is inside things: playlists, albums, folders, a library. The host
  * uses it for `browse`, and to queue or play a whole list.
  *
@@ -241,10 +247,12 @@ struct mm_catalog_ops {
 	/** Hand every item inside `uri` (one of the plugin's schemes) to
 	 * emit(ctx, item), in order, before returning; stop early when emit
 	 * says so. "<scheme>:" with nothing after it is the plugin's top level.
+	 * `flags`: enum mm_list_flags.
 	 * @returns 0; MM_NOT_A_LIST for a URI that is a single track, decided
 	 * without going to the network; any other nonzero with the reason in
 	 * err. */
-	int (*list)(void *priv, const char *uri, mm_item_fn emit, void *ctx, char *err, size_t errlen);
+	int (*list)(void *priv, const char *uri, uint32_t flags, mm_item_fn emit, void *ctx,
+	            char *err, size_t errlen);
 };
 
 /* Interface ops tables not defined yet: leave NULL. */

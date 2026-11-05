@@ -18,7 +18,7 @@
 #define MAX_DEPTH 8
 #define TAG "catalog"
 
-int catalog_list(const char *uri, mm_item_fn emit, void *ctx, char *err, size_t errlen)
+int catalog_list(const char *uri, uint32_t flags, mm_item_fn emit, void *ctx, char *err, size_t errlen)
 {
 	char scheme[32];
 	const struct mm_plugin *p;
@@ -30,7 +30,7 @@ int catalog_list(const char *uri, mm_item_fn emit, void *ctx, char *err, size_t 
 		snprintf(err, errlen, "nothing lists '%s:'", scheme);
 		return -1;
 	}
-	int rc = p->catalog->list(priv, uri, emit, ctx, err, errlen);
+	int rc = p->catalog->list(priv, uri, flags, emit, ctx, err, errlen);
 	if (rc == MM_NOT_A_LIST || rc == 0) return rc;
 	if (!err[0]) snprintf(err, errlen, "%s could not list %s", p->name, uri);
 	return -1;
@@ -78,7 +78,7 @@ static int gather(void *ctx, const struct mm_item *it)
 static int expand(const char *uri, int depth, struct vec *out, long max, char *err, size_t errlen)
 {
 	struct gather g = { { NULL, 0, 0 }, { NULL, 0, 0 }, 0 };
-	int rc = catalog_list(uri, gather, &g, err, errlen);
+	int rc = catalog_list(uri, MM_LIST_URIS, gather, &g, err, errlen);
 	if (rc == MM_NOT_A_LIST) {
 		rc = vec_push(out, uri);
 	} else if (rc == 0 && g.oom) {
@@ -170,7 +170,7 @@ static int v_browse(void *priv, struct mm_verb_ctx *c)
 	char err[512];
 	struct out o = { c->reply, c->reply_len, 0, 0, 0 };
 	c->reply[0] = '\0';
-	int rc = catalog_list(c->argv[1], print_item, &o, err, sizeof(err));
+	int rc = catalog_list(c->argv[1], 0, print_item, &o, err, sizeof(err));
 	if (rc == MM_NOT_A_LIST) {
 		snprintf(c->reply, c->reply_len, "%s is a track, not a list", c->argv[1]);
 		return MM_ERR;

@@ -548,9 +548,11 @@ static int visible(const struct dirent *d)
 	return d->d_name[0] != '.';
 }
 
-static int ff_list(void *priv, const char *uri, mm_item_fn emit, void *ctx, char *err, size_t errlen)
+static int ff_list(void *priv, const char *uri, uint32_t flags, mm_item_fn emit, void *ctx,
+                   char *err, size_t errlen)
 {
 	struct ff_priv *p = priv;
+	(void)flags; /* a listing costs the same either way */
 	char input[4096], dir[4096];
 	int is_net;
 

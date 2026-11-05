@@ -11,7 +11,7 @@
 /** List `uri` with the catalog of its scheme.
  * @returns 0; MM_NOT_A_LIST; or -1 with err set (no catalog for the
  * scheme, or the plugin's own error). */
-int catalog_list(const char *uri, mm_item_fn emit, void *ctx, char *err, size_t errlen);
+int catalog_list(const char *uri, uint32_t flags, mm_item_fn emit, void *ctx, char *err, size_t errlen);
 
 /** The track URIs `uri` stands for, in order: `uri` itself when it is a
  * track (or no catalog knows its scheme); otherwise every track inside,
