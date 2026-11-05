@@ -694,6 +694,17 @@ void player_stream_tags(void *stream, const char *const *kv)
 	if (spk) atomic_fetch_add(&P.metas, 1);
 }
 
+void player_current(char *uri, size_t ucap, char *tags, size_t tcap, uint64_t *duration_ms,
+                    char *source, size_t scap)
+{
+	pthread_mutex_lock(&P.slock);
+	snprintf(uri, ucap, "%s", P.spk.uri);
+	snprintf(tags, tcap, "%s", P.spk.tags);
+	*duration_ms = P.spk.info.duration_ms;
+	snprintf(source, scap, "%s", P.spk.src_p ? P.spk.src_p->name : "");
+	pthread_mutex_unlock(&P.slock);
+}
+
 void player_current_uri(char *buf, size_t cap)
 {
 	pthread_mutex_lock(&P.slock);

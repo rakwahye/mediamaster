@@ -288,6 +288,27 @@ int loader_find_catalog(const char *scheme, const struct mm_plugin **p, void **p
 	return -1;
 }
 
+int loader_find_radio(const char *name, const struct mm_plugin **p, void **priv)
+{
+	for (size_t i = 0; i < s_n; i++) {
+		const struct slot *s = &s_slots[i];
+		if (s->state == MM_PLUGIN_ACTIVE && s->p->catalog && s->p->catalog->radio && !strcmp(s->p->name, name)) {
+			*p = s->p;
+			*priv = s->priv;
+			return 0;
+		}
+	}
+	return -1;
+}
+
+void loader_each_radio(void (*fn)(void *ctx, const char *name), void *ctx)
+{
+	for (size_t i = 0; i < s_n; i++) {
+		const struct slot *s = &s_slots[i];
+		if (s->state == MM_PLUGIN_ACTIVE && s->p->catalog && s->p->catalog->radio) fn(ctx, s->p->name);
+	}
+}
+
 void loader_each_catalog(void (*fn)(void *ctx, const char *scheme, const char *name), void *ctx)
 {
 	for (size_t i = 0; i < s_n; i++) {

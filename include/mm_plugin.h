@@ -27,7 +27,8 @@
 extern "C" {
 #endif
 
-#define MM_ABI 1
+/* 2: catalog ops gained `radio`. */
+#define MM_ABI 2
 
 /** Policy attributes. The host uses these for the offline switch, rate
  * budgets and credential handling, never for dispatch. */
@@ -253,6 +254,16 @@ struct mm_catalog_ops {
 	 * err. */
 	int (*list)(void *priv, const char *uri, uint32_t flags, mm_item_fn emit, void *ctx,
 	            char *err, size_t errlen);
+
+	/** Optional. More like `seed`: emit tracks that would follow it well,
+	 * in order, before returning. The seed may come from any source, so
+	 * judge it by what it says (title, artist, album, duration) as much
+	 * as by its URI; a plugin that cannot place a foreign seed returns
+	 * nonzero. The host leaves out what is already queued. `flags`: enum
+	 * mm_list_flags. Runs on a host thread of its own, and may block on
+	 * the network. @returns 0, or nonzero with the reason in err. */
+	int (*radio)(void *priv, const struct mm_item *seed, uint32_t flags, mm_item_fn emit, void *ctx,
+	             char *err, size_t errlen);
 };
 
 /* Interface ops tables not defined yet: leave NULL. */

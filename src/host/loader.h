@@ -50,6 +50,13 @@ int loader_find_source(const char *scheme, const struct mm_plugin **p, void **pr
 /** Active plugin with catalog ops claiming `scheme`. @returns 0 or -1. */
 int loader_find_catalog(const char *scheme, const struct mm_plugin **p, void **priv);
 
+/** Active plugin `name` with a catalog radio op. @returns 0 or -1. */
+int loader_find_radio(const char *name, const struct mm_plugin **p, void **priv);
+
+/** fn(ctx, plugin name) for each active plugin with a radio op, in load
+ * order. */
+void loader_each_radio(void (*fn)(void *ctx, const char *name), void *ctx);
+
 /** fn(ctx, scheme, plugin name) for each active catalog plugin, in load
  * order, with the first scheme it claims. */
 void loader_each_catalog(void (*fn)(void *ctx, const char *scheme, const char *name), void *ctx);

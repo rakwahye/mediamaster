@@ -79,6 +79,10 @@ uint32_t player_meta_count(void);
 uint32_t player_seek_count(void);
 /** URI of the open stream into buf ("" when stopped). */
 void player_current_uri(char *buf, size_t cap);
+/** The item at the speaker: its URI, tag lines ("key: value\n", as
+ * status prints them), duration and the source plugin's name, or "". */
+void player_current(char *uri, size_t ucap, char *tags, size_t tcap, uint64_t *duration_ms,
+                    char *source, size_t scap);
 /** Position of the item at the speaker, in ms. */
 uint64_t player_position_ms(void);
 
