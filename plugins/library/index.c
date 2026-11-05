@@ -67,7 +67,7 @@ struct libidx {
 
 	pthread_mutex_t lock;   /* everything below */
 	struct snap *cur;
-	int want, running, stop, checkpoint_s;
+	int want, running, stop, checkpoint_s, probe_jobs;
 	long dirs_read, probes, scans;
 	pthread_t th;
 	int th_on;
@@ -419,9 +419,9 @@ static void checkpoint(struct scan *sc)
 	publish(sc, m);
 	sc->shown = 1;
 	if (sc->phase == 1)
-		sc->x->h->log(sc->x->h, MM_LOG_INFO, "library: %zu folders so far, saved", sc->new->n);
+		sc->x->h->log(sc->x->h, MM_LOG_INFO, "%zu folders so far, saved", sc->new->n);
 	else
-		sc->x->h->log(sc->x->h, MM_LOG_INFO, "library: tags for %ld of %ld files so far, saved",
+		sc->x->h->log(sc->x->h, MM_LOG_INFO, "tags for %ld of %ld files so far, saved",
 		              sc->new->probed, sc->new->files);
 }
 
@@ -498,32 +498,139 @@ static void visit(struct scan *sc, const char *rel, int depth)
 	}
 }
 
-/* Phase 2: probe every file not probed yet. */
+/* Phase 2: probe every file not probed yet, `jobs` at a time. On a slow
+ * drive a probe mostly waits, so several in flight go several times as
+ * fast. Workers only probe into their own job; the scan thread applies
+ * the results to the snapshot and checkpoints, so nothing else writes it. */
+
+struct job {
+	struct file *f;
+	char path[12288];
+	char tags[TAGS_MAX];
+	long long ms;
+	int state; /* 0 waiting, 1 taken, 2 done */
+};
+
+struct pool {
+	struct scan *sc;
+	struct job *v;
+	size_t n, next;
+	pthread_mutex_t lock;
+	pthread_cond_t done;
+	int no_probe; /* ffprobe could not be run */
+};
+
+static void *prober(void *arg)
+{
+	struct pool *p = arg;
+	for (;;) {
+		pthread_mutex_lock(&p->lock);
+		if (p->next == p->n || p->no_probe || stopping(p->sc->x)) {
+			pthread_mutex_unlock(&p->lock);
+			return NULL;
+		}
+		struct job *j = &p->v[p->next++];
+		j->state = 1;
+		pthread_mutex_unlock(&p->lock);
+
+		long long ms = probe_file(p->sc->x->ffprobe, j->path, PROBE_TIMEOUT_MS, j->tags, sizeof(j->tags));
+		pthread_mutex_lock(&p->lock);
+		if (ms < 0) p->no_probe = 1;
+		j->ms = ms;
+		j->state = 2;
+		pthread_cond_signal(&p->done);
+		pthread_mutex_unlock(&p->lock);
+	}
+}
+
 static void probe_all(struct scan *sc)
 {
-	char path[12288], tags[TAGS_MAX];
-	for (size_t i = 0; i < sc->new->n && !sc->fail; i++) {
-		for (size_t k = 0; k < sc->new->v[i].nf; k++) {
-			struct dir *d = &sc->new->v[i];
-			struct file *f = &d->f[k];
-			if (f->tags) continue;
-			if (stopping(sc->x)) return;
-			checkpoint(sc);
-			snprintf(path, sizeof(path), "%s%s%s/%s", sc->x->root, d->rel[0] ? "/" : "", d->rel, f->name);
-			long long ms = probe_file(sc->x->ffprobe, path, PROBE_TIMEOUT_MS, tags, sizeof(tags));
-			if (ms < 0) { /* no ffprobe at all: leave tags for another time */
-				sc->x->h->log(sc->x->h, MM_LOG_WARN, "cannot run %s: no tags", sc->x->ffprobe);
-				return;
-			}
-			if (!(f->tags = strdup(tags))) {
+	struct pool p;
+	memset(&p, 0, sizeof(p));
+	p.sc = sc;
+	for (size_t i = 0; i < sc->new->n; i++)
+		for (size_t k = 0; k < sc->new->v[i].nf; k++) p.n += !sc->new->v[i].f[k].tags;
+	if (!p.n) return;
+	if (!(p.v = calloc(p.n, sizeof(*p.v)))) {
+		sc->fail = 1;
+		return;
+	}
+	size_t n = 0;
+	for (size_t i = 0; i < sc->new->n; i++) {
+		struct dir *d = &sc->new->v[i];
+		for (size_t k = 0; k < d->nf; k++) {
+			if (d->f[k].tags) continue;
+			p.v[n].f = &d->f[k];
+			snprintf(p.v[n].path, sizeof(p.v[n].path), "%s%s%s/%s", sc->x->root, d->rel[0] ? "/" : "", d->rel,
+			         d->f[k].name);
+			n++;
+		}
+	}
+	pthread_mutex_init(&p.lock, NULL);
+	pthread_cond_init(&p.done, NULL);
+
+	pthread_mutex_lock(&sc->x->lock);
+	int jobs = sc->x->probe_jobs;
+	pthread_mutex_unlock(&sc->x->lock);
+	pthread_t th[16];
+	int nth = 0;
+	for (int i = 0; i < jobs && i < 16; i++)
+		if (pthread_create(&th[nth], NULL, prober, &p) == 0) nth++;
+
+	/* Apply results as they come, in any order; checkpoint between. */
+	size_t applied = 0;
+	pthread_mutex_lock(&p.lock);
+	while (nth && applied < p.n && !sc->fail) {
+		int any = 0;
+		for (size_t j = 0; j < p.n; j++) {
+			struct job *jb = &p.v[j];
+			if (jb->state != 2) continue;
+			jb->state = 3; /* applied */
+			applied++;
+			any = 1;
+			if (jb->ms < 0) continue;
+			if (!(jb->f->tags = strdup(jb->tags))) {
 				sc->fail = 1;
-				return;
+				break;
 			}
-			f->ms = ms;
+			jb->f->ms = jb->ms;
+			sc->new->probed++;
+			sc->probes++;
+		}
+		int idle = p.next == p.n || p.no_probe || stopping(sc->x);
+		int busy = 0;
+		for (size_t j = 0; j < p.n && !busy; j++) busy = p.v[j].state == 1 || p.v[j].state == 2;
+		if (idle && !busy) break;
+		if (!any) {
+			struct timespec ts;
+			clock_gettime(CLOCK_REALTIME, &ts);
+			ts.tv_nsec += 200 * 1000000L;
+			if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+			pthread_cond_timedwait(&p.done, &p.lock, &ts);
+			continue;
+		}
+		pthread_mutex_unlock(&p.lock);
+		checkpoint(sc);
+		pthread_mutex_lock(&p.lock);
+	}
+	int no_probe = p.no_probe;
+	pthread_mutex_unlock(&p.lock);
+	for (int i = 0; i < nth; i++) pthread_join(th[i], NULL);
+	/* Results that came in after the loop let go. */
+	for (size_t j = 0; j < p.n && !sc->fail; j++) {
+		struct job *jb = &p.v[j];
+		if (jb->state != 2 || jb->ms < 0) continue;
+		if (!(jb->f->tags = strdup(jb->tags))) sc->fail = 1;
+		else {
+			jb->f->ms = jb->ms;
 			sc->new->probed++;
 			sc->probes++;
 		}
 	}
+	if (no_probe) sc->x->h->log(sc->x->h, MM_LOG_WARN, "cannot run %s: no tags", sc->x->ffprobe);
+	pthread_cond_destroy(&p.done);
+	pthread_mutex_destroy(&p.lock);
+	free(p.v);
 }
 
 static void *scanner(void *arg)
@@ -547,7 +654,7 @@ static void *scanner(void *arg)
 		sc.phase = 1;
 		clock_gettime(CLOCK_MONOTONIC, &t0);
 		sc.last = t0;
-		x->h->log(x->h, MM_LOG_INFO, "library: updating %s (%zu folders, %ld files saved)", x->root,
+		x->h->log(x->h, MM_LOG_INFO, "updating %s (%zu folders, %ld files saved)", x->root,
 		          sc.old ? sc.old->n : (size_t)0, sc.old ? sc.old->files : 0L);
 		if ((sc.new = calloc(1, sizeof(*sc.new)))) visit(&sc, "", 0);
 		free(sc.seen);
@@ -580,7 +687,7 @@ static void *scanner(void *arg)
 		x->probes = sc.probes;
 		x->scans++;
 		pthread_mutex_unlock(&x->lock);
-		x->h->log(x->h, MM_LOG_INFO, "library: %ld files (%ld with tags) in %zu folders; %ld read, %ld probed, in %ld ms",
+		x->h->log(x->h, MM_LOG_INFO, "%ld files (%ld with tags) in %zu folders; %ld read, %ld probed, in %ld ms",
 		          sc.new->files, sc.new->probed, sc.new->n, sc.read, sc.probes,
 		          (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000));
 		int changed = sc.read || sc.probes || !sc.old || sc.old->n != sc.new->n || sc.old->files != sc.new->files;
@@ -604,6 +711,7 @@ struct libidx *libidx_open(const struct mm_host *h, const char *root, const char
 	snprintf(x->ffprobe, sizeof(x->ffprobe), "%s", ffprobe);
 	pthread_mutex_init(&x->lock, NULL);
 	x->checkpoint_s = CHECKPOINT_S;
+	x->probe_jobs = 4;
 	x->cur = load(x->saved, x->root);
 	libidx_rescan(x);
 	return x;
@@ -613,6 +721,13 @@ void libidx_checkpoint_every(struct libidx *x, int seconds)
 {
 	pthread_mutex_lock(&x->lock);
 	x->checkpoint_s = seconds < 0 ? 0 : seconds;
+	pthread_mutex_unlock(&x->lock);
+}
+
+void libidx_probe_jobs(struct libidx *x, int n)
+{
+	pthread_mutex_lock(&x->lock);
+	x->probe_jobs = n < 1 ? 1 : n > 16 ? 16 : n;
 	pthread_mutex_unlock(&x->lock);
 }
 

@@ -18,7 +18,8 @@
  * Config:
  *   library.music_dir = ~/Music
  *   library.index     = $XDG_CACHE_HOME/mediamaster/library.idx, or "off"
- *   library.ffprobe   = ffprobe */
+ *   library.ffprobe   = ffprobe
+ *   library.probe_jobs = 4      ffprobes at once while tagging (1..16) */
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE /* versionsort, strverscmp, pipe2, d_type */
@@ -74,6 +75,8 @@ static void setup(struct lib *l)
 	cfg(h, "index", def, saved, sizeof(saved));
 	cfg(h, "ffprobe", "ffprobe", ffprobe, sizeof(ffprobe));
 	int off = !strcmp(saved, "off");
+	const char *jv = h->config_get(h, "probe_jobs");
+	int jobs = jv && *jv ? atoi(jv) : 4;
 
 	pthread_mutex_lock(&l->lock);
 	if (l->idx && !off && !strcmp(root, l->root) && !strcmp(saved, l->saved) && !strcmp(ffprobe, l->ffprobe)) {
@@ -89,6 +92,7 @@ static void setup(struct lib *l)
 			l->idx = libidx_open(h, root, saved, ffprobe);
 		}
 	}
+	if (l->idx) libidx_probe_jobs(l->idx, jobs);
 	pthread_mutex_unlock(&l->lock);
 }
 

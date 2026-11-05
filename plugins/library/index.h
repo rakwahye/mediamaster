@@ -59,6 +59,10 @@ struct libidx_stats {
 };
 void libidx_stats(struct libidx *x, struct libidx_stats *out);
 
+/** ffprobes run at once while tagging (default 4, 1..16). Takes effect
+ * at the next tag pass. */
+void libidx_probe_jobs(struct libidx *x, int n);
+
 /** Seconds between checkpoints (default 15; 0 = at every step, for tests). */
 void libidx_checkpoint_every(struct libidx *x, int seconds);
 
