@@ -108,6 +108,21 @@ until grep -A1 'member=Seeked' "$T/signals" | grep -q 'int64 10'; do
 	sleep 0.1
 done
 
+# Tags from the source: title, artists, album, track, cover.
+if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+	ffmpeg -v error -f lavfi -i sine=f=440:d=5 -ac 2 -metadata title="Tone One" -metadata artist="Osc" \
+	       -metadata album="Tests" -metadata track=3/12 "$T/tagged.flac" -y || fail "fixture"
+	"$M" play "$T/tagged.flac" >/dev/null || fail "play a tagged file"
+	sleep 0.3
+	[ "$($P metadata xesam:title)" = "Tone One" ] || fail "title: $($P metadata xesam:title)"
+	[ "$($P metadata xesam:artist)" = Osc ] || fail "artist: $($P metadata xesam:artist)"
+	[ "$($P metadata xesam:album)" = Tests ] || fail "album"
+	[ "$($P metadata xesam:trackNumber)" = 3 ] || fail "track number"
+fi
+"$M" play sine:440:30 >/dev/null
+sleep 0.2
+[ "$($P metadata xesam:title)" = "sine:440:30" ] || fail "untagged falls back to the name: $($P metadata xesam:title)"
+
 $P stop
 "$M" plugins | grep -q '^mpris .*active' || fail "mpris not active"
 "$M" quit >/dev/null

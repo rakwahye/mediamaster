@@ -7,7 +7,7 @@
  *   ffmpeg -nostdin -hide_banner -loglevel error [-ss S] -i INPUT
  *          -map 0:a:0 -vn -sn -dn -f f32le -ar 48000 -ac 2 pipe:1
  *
- * Duration comes from ffprobe at open. Known duration → seekable (seek
+ * Duration and tags come from ffprobe at open. Known duration → seekable (seek
  * respawns with -ss); unknown → live (radio, endless streams).
  *
  * URIs: file:/path, file:///path, a bare path, http://, https://.
@@ -154,55 +154,114 @@ static int reap(pid_t pid)
 
 /* ------------------------------------------------------------------ probe */
 
-/* Duration in ms via ffprobe, 0 if unknown, unknowable or too slow. */
-static uint64_t probe_duration(struct ff_stream *s)
+#define PROBE_MAX 8192
+
+/* ffprobe's name for a tag → ours (mm_host.stream_tags). */
+static const char *const tag_map[][2] = {
+	{ "title", "title" }, { "artist", "artist" }, { "album", "album" },
+	{ "album_artist", "albumartist" }, { "albumartist", "albumartist" },
+	{ "track", "tracknumber" }, { "tracknumber", "tracknumber" },
+	{ "disc", "discnumber" }, { "discnumber", "discnumber" },
+	{ "date", "date" }, { "year", "date" }, { "genre", "genre" },
+};
+
+static int same_ci(const char *a, const char *b)
+{
+	for (; *a && *b; a++, b++) {
+		char x = *a >= 'A' && *a <= 'Z' ? (char)(*a + 32) : *a;
+		char y = *b >= 'A' && *b <= 'Z' ? (char)(*b + 32) : *b;
+		if (x != y) return 0;
+	}
+	return *a == *b;
+}
+
+/* "TAG:name=value" lines (edited in place) → kv pairs, first of each key
+ * wins (the audio stream's tags come before the container's). "3/12"
+ * track and disc numbers keep the number. @returns pairs found. */
+static int parse_tags(char *buf, const char **kv, int max_pairs)
+{
+	int n = 0;
+	for (char *line = buf, *next; line && *line && n < max_pairs; line = next) {
+		next = strchr(line, '\n');
+		if (next) *next++ = '\0';
+		if (strncmp(line, "TAG:", 4) != 0) continue;
+		char *eq = strchr(line + 4, '=');
+		if (!eq) continue;
+		*eq = '\0';
+		const char *key = NULL;
+		for (size_t i = 0; i < sizeof(tag_map) / sizeof(tag_map[0]) && !key; i++)
+			if (same_ci(line + 4, tag_map[i][0])) key = tag_map[i][1];
+		int dup = 0;
+		for (int i = 0; key && i < n && !dup; i++) dup = !strcmp(kv[2 * i], key);
+		if (!key || dup || !eq[1]) continue;
+		if (!strcmp(key, "tracknumber") || !strcmp(key, "discnumber")) {
+			char *slash = strchr(eq + 1, '/');
+			if (slash) *slash = '\0';
+		}
+		kv[2 * n] = key;
+		kv[2 * n + 1] = eq + 1;
+		n++;
+	}
+	kv[2 * n] = NULL;
+	return n;
+}
+
+/* Duration in ms via ffprobe (0 if unknown, unknowable or too slow), and
+ * its tag lines into out. */
+static uint64_t probe(struct ff_stream *s, char *out, size_t cap)
 {
 	const struct mm_host *h = s->h;
 	char tmo[32];
 	snprintf(tmo, sizeof(tmo), "%ld", cfg_long(h, "net_timeout", 15) * 1000000L);
-	char *argv[16];
+	char *argv[20];
 	int n = 0;
 	argv[n++] = (char *)cfg(h, "ffprobe", "ffprobe");
 	argv[n++] = (char *)"-v";
 	argv[n++] = (char *)"error";
 	if (s->is_net) { argv[n++] = (char *)"-rw_timeout"; argv[n++] = tmo; }
+	argv[n++] = (char *)"-select_streams";
+	argv[n++] = (char *)"a:0";
 	argv[n++] = (char *)"-show_entries";
-	argv[n++] = (char *)"format=duration";
+	argv[n++] = (char *)"stream_tags:format=duration:format_tags";
 	argv[n++] = (char *)"-of";
-	argv[n++] = (char *)"default=noprint_wrappers=1:nokey=1";
+	argv[n++] = (char *)"default=noprint_wrappers=1";
 	argv[n++] = s->input;
 	argv[n] = NULL;
 
-	int out = -1;
-	pid_t pid = spawn(h, argv, &out, NULL);
+	out[0] = '\0';
+	int fd = -1;
+	pid_t pid = spawn(h, argv, &fd, NULL);
 	if (pid < 0) return 0;
 
-	char buf[128];
 	size_t len = 0;
 	long deadline = now_ms() + cfg_long(h, "probe_ms", 5000);
 	for (;;) {
 		long left = deadline - now_ms();
 		if (left <= 0) {
 			h->log(h, MM_LOG_INFO, "ffprobe timed out on %s; treating as live", s->uri);
+			len = 0;
 			break;
 		}
-		struct pollfd pf = { out, POLLIN, 0 };
+		struct pollfd pf = { fd, POLLIN, 0 };
 		int pr = poll(&pf, 1, (int)left);
 		if (pr < 0 && errno == EINTR) continue;
 		if (pr <= 0) continue;
-		ssize_t r = read(out, buf + len, sizeof(buf) - 1 - len);
+		char sink[512];
+		int full = len == cap - 1;
+		ssize_t r = full ? read(fd, sink, sizeof(sink)) : read(fd, out + len, cap - 1 - len);
 		if (r < 0 && errno == EINTR) continue;
 		if (r <= 0) break;
-		len += (size_t)r;
-		if (len == sizeof(buf) - 1) break;
+		if (!full) len += (size_t)r; /* past the cap: drain, keep what fits */
 	}
-	close(out);
+	close(fd);
 	reap(pid);
-	buf[len] = '\0';
+	out[len] = '\0';
 
+	const char *d = strstr(out, "duration=");
+	if (d && d != out && d[-1] != '\n') d = NULL;
 	char *end;
-	double secs = strtod(buf, &end);
-	if (end == buf || secs <= 0) return 0; /* "N/A" or nothing */
+	double secs = d ? strtod(d + 9, &end) : 0;
+	if (!d || end == d + 9 || secs <= 0) return 0; /* "N/A" or nothing */
 	return (uint64_t)(secs * 1000.0 + 0.5);
 }
 
@@ -342,11 +401,19 @@ static int ff_open(void *priv, const char *uri, void **stream, struct mm_stream_
 	}
 	if (pipe2(s->wake, O_CLOEXEC | O_NONBLOCK) != 0) goto fail;
 
-	info->duration_ms = probe_duration(s);
+	char *probed = malloc(PROBE_MAX);
+	if (!probed) goto fail;
+	info->duration_ms = probe(s, probed, PROBE_MAX);
 	info->flags = info->duration_ms ? MM_STREAM_SEEKABLE : MM_STREAM_LIVE;
 
-	if (decoder_start(s, 0) != 0) goto fail;
+	if (decoder_start(s, 0) != 0) {
+		free(probed);
+		goto fail;
+	}
 	*stream = s;
+	const char *kv[2 * 16 + 1];
+	if (parse_tags(probed, kv, 16) && MM_HOST_HAS(p->h, stream_tags)) p->h->stream_tags(p->h, s, kv);
+	free(probed);
 	return 0;
 
 fail:

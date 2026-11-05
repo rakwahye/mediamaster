@@ -51,6 +51,9 @@ struct snap {
 	int seekable;
 	int volume;       /* 0..100 */
 	long qlen, qcur;  /* queue length, cursor (1-based, 0 none) */
+	/* Tags, "" when the source gave none. Lists are newline-separated. */
+	char title[512], artists[1024], album[512], albumartists[1024], art[1024];
+	int track;
 };
 
 struct mpris {
@@ -94,6 +97,26 @@ static const char *field(const char *text, const char *key, char *out, size_t ca
 	return NULL;
 }
 
+/* Every value of `key`, newline-separated, into out. */
+static void fields(const char *text, const char *key, char *out, size_t cap)
+{
+	size_t kl = strlen(key), o = 0;
+	out[0] = '\0';
+	for (const char *p = text; p && *p; ) {
+		if (!strncmp(p, key, kl) && p[kl] == ':' && p[kl + 1] == ' ') {
+			const char *v = p + kl + 2, *e = strchr(v, '\n');
+			size_t n = e ? (size_t)(e - v) : strlen(v);
+			if (o + (o > 0) + n + 1 > cap) break;
+			if (o) out[o++] = '\n';
+			memcpy(out + o, v, n);
+			o += n;
+			out[o] = '\0';
+		}
+		p = strchr(p, '\n');
+		if (p) p++;
+	}
+}
+
 static void take_snapshot(struct mpris *m, struct snap *s)
 {
 	static char buf[16384]; /* bus thread only */
@@ -108,6 +131,12 @@ static void take_snapshot(struct mpris *m, struct snap *s)
 		if (field(buf, "duration", v, sizeof(v)) && strcmp(v, "-")) s->duration = strtod(v, NULL);
 		if (field(buf, "seekable", v, sizeof(v))) s->seekable = !strcmp(v, "yes");
 		if (field(buf, "volume", v, sizeof(v))) s->volume = atoi(v);
+		field(buf, "title", s->title, sizeof(s->title));
+		fields(buf, "artist", s->artists, sizeof(s->artists));
+		field(buf, "album", s->album, sizeof(s->album));
+		fields(buf, "albumartist", s->albumartists, sizeof(s->albumartists));
+		field(buf, "art", s->art, sizeof(s->art));
+		if (field(buf, "tracknumber", v, sizeof(v))) s->track = atoi(v);
 	}
 	if (cmd(m, buf, sizeof(buf), "queue", "list", NULL) == MM_REPLY_RAW && strncmp(buf, "queue is empty", 14)) {
 		long n = 0;
@@ -233,6 +262,35 @@ static int dict_close(sd_bus_message *r)
 	return rc;
 }
 
+static int dict_str(sd_bus_message *r, const char *key, const char *val)
+{
+	int rc;
+	if (!val[0]) return 0;
+	if ((rc = dict_open(r, key, "s")) < 0 || (rc = sd_bus_message_append(r, "s", val)) < 0) return rc;
+	return dict_close(r);
+}
+
+/* A newline-separated list as an "as" entry. */
+static int dict_strv(sd_bus_message *r, const char *key, const char *list)
+{
+	char one[1024];
+	int rc;
+	if (!list[0]) return 0;
+	if ((rc = dict_open(r, key, "as")) < 0 || (rc = sd_bus_message_open_container(r, 'a', "s")) < 0)
+		return rc;
+	for (const char *p = list; p; ) {
+		const char *e = strchr(p, '\n');
+		size_t n = e ? (size_t)(e - p) : strlen(p);
+		if (n >= sizeof(one)) n = sizeof(one) - 1;
+		memcpy(one, p, n);
+		one[n] = '\0';
+		if ((rc = sd_bus_message_append(r, "s", one)) < 0) return rc;
+		p = e ? e + 1 : NULL;
+	}
+	if ((rc = sd_bus_message_close_container(r)) < 0) return rc;
+	return dict_close(r);
+}
+
 GETTER(get_metadata)
 {
 	UNUSED_GETTER_ARGS;
@@ -246,13 +304,21 @@ GETTER(get_metadata)
 	    (rc = sd_bus_message_append(reply, "o", tp)) < 0 || (rc = dict_close(reply)) < 0)
 		return rc;
 	if (s.item && s.uri[0]) {
-		title_of(s.uri, title, sizeof(title));
-		if ((rc = dict_open(reply, "xesam:url", "s")) < 0 ||
-		    (rc = sd_bus_message_append(reply, "s", s.uri)) < 0 || (rc = dict_close(reply)) < 0)
+		if (s.title[0]) snprintf(title, sizeof(title), "%s", s.title);
+		else title_of(s.uri, title, sizeof(title));
+		if ((rc = dict_str(reply, "xesam:url", s.uri)) < 0 ||
+		    (rc = dict_str(reply, "xesam:title", title)) < 0 ||
+		    (rc = dict_strv(reply, "xesam:artist", s.artists)) < 0 ||
+		    (rc = dict_str(reply, "xesam:album", s.album)) < 0 ||
+		    (rc = dict_strv(reply, "xesam:albumArtist", s.albumartists)) < 0 ||
+		    (rc = dict_str(reply, "mpris:artUrl", s.art)) < 0)
 			return rc;
-		if ((rc = dict_open(reply, "xesam:title", "s")) < 0 ||
-		    (rc = sd_bus_message_append(reply, "s", title)) < 0 || (rc = dict_close(reply)) < 0)
-			return rc;
+		if (s.track > 0) {
+			if ((rc = dict_open(reply, "xesam:trackNumber", "i")) < 0 ||
+			    (rc = sd_bus_message_append(reply, "i", (int32_t)s.track)) < 0 ||
+			    (rc = dict_close(reply)) < 0)
+				return rc;
+		}
 		if (s.duration > 0) {
 			if ((rc = dict_open(reply, "mpris:length", "x")) < 0 ||
 			    (rc = sd_bus_message_append(reply, "x", (int64_t)(s.duration * 1e6))) < 0 ||

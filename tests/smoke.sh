@@ -86,10 +86,13 @@ pos=$(field position)
 
 # a real file through ffmpeg, then the same file over http
 if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
-	ffmpeg -v error -f lavfi -i sine=f=440:d=1 -ac 2 "$T/tone one.flac" -y || fail "fixture"
+	ffmpeg -v error -f lavfi -i sine=f=440:d=1 -ac 2 -metadata title="Tone One" -metadata artist="Osc" \
+	       -metadata track=3/12 "$T/tone one.flac" -y || fail "fixture"
 	"$MMCTL" null reset >/dev/null
 	"$MMCTL" play "$T/tone one.flac" | grep -q '^ok playing' || fail "play a file by path"
 	[ "$(field source)" = ffmpeg ] || fail "a bare path is not routed to ffmpeg"
+	[ "$(field title)" = "Tone One" ] && [ "$(field artist)" = Osc ] && [ "$(field tracknumber)" = 3 ] ||
+		fail "file tags not in status: $("$MMCTL" status | tr '\n' ' ')"
 	[ "$(field seekable)" = yes ] || fail "a file should be seekable"
 	case "$(field duration)" in 0.99*|1.00*) ;; *) fail "duration $(field duration)";; esac
 	wait_state stopped 40
