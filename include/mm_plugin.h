@@ -75,10 +75,13 @@ enum mm_event {
 	MM_EV_TRACK  = 1u << 1, /* a different item reached the speaker */
 	MM_EV_VOLUME = 1u << 2,
 	MM_EV_SEEK   = 1u << 3, /* position jumped (seek) */
-	MM_EV_QUEUE  = 1u << 4  /* queue contents or cursor changed */
+	MM_EV_QUEUE  = 1u << 4, /* queue contents or cursor changed */
+	MM_EV_META   = 1u << 5  /* the item at the speaker learned its duration etc. */
 };
 
 typedef void (*mm_event_fn)(void *priv, uint32_t events);
+
+struct mm_stream_info; /* defined with the source interface below */
 
 /** Services the host offers a plugin. Each plugin gets its own copy, so
  * the host knows who is calling. Check `size` before touching a field
@@ -113,7 +116,21 @@ struct mm_host {
 	int (*subscribe)(const struct mm_host *h, uint32_t mask, mm_event_fn cb, void *priv);
 
 	void *ctx; /* host-private */
+
+	/* ---- fields below were added after the first plugins were built;
+	 * check `size` before using them. */
+
+	/** A source that only learns a stream's duration or seekability after
+	 * `open` (a download completing, a header arriving) reports it here.
+	 * `stream` is the handle `open` returned; `info` replaces what `open`
+	 * filled in. Any thread, but never after `close` returned for that
+	 * stream. */
+	void (*stream_update)(const struct mm_host *h, void *stream, const struct mm_stream_info *info);
 };
+
+/** True if host `h` provides `field` (it was built with it). */
+#define MM_HOST_HAS(h, field) \
+	((h)->size >= offsetof(struct mm_host, field) + sizeof((h)->field) && (h)->field)
 
 /* ------------------------------------------------------------------ PCM
  *

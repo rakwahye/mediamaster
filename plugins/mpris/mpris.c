@@ -407,7 +407,7 @@ static const sd_bus_vtable player_vtable[] = {
 
 static void emit(struct mpris *m, uint32_t ev)
 {
-	if (ev & (MM_EV_STATE | MM_EV_TRACK | MM_EV_QUEUE))
+	if (ev & (MM_EV_STATE | MM_EV_TRACK | MM_EV_QUEUE | MM_EV_META))
 		sd_bus_emit_properties_changed(m->bus, OBJ, IF_PLAYER, "PlaybackStatus", "Metadata",
 		                               "CanGoNext", "CanGoPrevious", "CanPlay", "CanPause", "CanSeek", NULL);
 	if (ev & MM_EV_VOLUME)
@@ -537,7 +537,8 @@ static int mpris_init(const struct mm_host *h, void **priv)
 	}
 	m->efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 	if (m->efd < 0) goto fail;
-	if (h->subscribe(h, MM_EV_STATE | MM_EV_TRACK | MM_EV_VOLUME | MM_EV_SEEK | MM_EV_QUEUE, on_event, m) != 0)
+	if (h->subscribe(h, MM_EV_STATE | MM_EV_TRACK | MM_EV_VOLUME | MM_EV_SEEK | MM_EV_QUEUE | MM_EV_META,
+	                 on_event, m) != 0)
 		goto fail;
 	if (pthread_create(&m->thread, NULL, bus_thread, m) != 0) goto fail;
 	m->running = 1;

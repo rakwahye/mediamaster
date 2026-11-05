@@ -14,6 +14,7 @@
 #ifndef MM_PLAYER_H
 #define MM_PLAYER_H
 
+#include "mm_plugin.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -67,6 +68,11 @@ uint32_t player_buffered_frames(void);
 uint64_t player_underruns(void);
 /** Id of the item at the speaker, 0 when stopped. Changes per item. */
 uint32_t player_item(void);
+/** A source reports new info for one of its open streams (see
+ * mm_host.stream_update). Applies to whichever slot holds it. */
+void player_stream_update(void *stream, const struct mm_stream_info *info);
+/** Changes whenever the speaker item's info is updated. */
+uint32_t player_meta_count(void);
 /** Number of successful seeks so far. */
 uint32_t player_seek_count(void);
 /** URI of the open stream into buf ("" when stopped). */

@@ -8,6 +8,7 @@
 #include "ipc.h"
 #include "loader.h"
 #include "check.h"
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -22,6 +23,32 @@ static int ts_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL
 static const struct mm_sink_ops ts_ops = { .start = ts_start, .stop = ts_stop };
 static const struct mm_plugin testsink = { .abi = MM_ABI, .name = "testsink", .init = ts_init, .sink = &ts_ops };
 
+/* A source whose streams learn their length after open: silence, as long
+ * as the test likes, until it reports a duration. */
+struct late { int id; };
+static struct late g_late[4];
+static int g_nlate;
+static int late_open(void *priv, const char *uri, void **st, struct mm_stream_info *in)
+{
+	(void)priv; (void)uri;
+	if (g_nlate == 4) return -1;
+	*st = &g_late[g_nlate++];
+	in->duration_ms = 0;
+	in->flags = MM_STREAM_LIVE;
+	return 0;
+}
+static long late_read(void *st, float *dst, uint32_t frames)
+{
+	(void)st;
+	memset(dst, 0, (size_t)frames * MM_PCM_CHANNELS * sizeof(float));
+	return (long)frames;
+}
+static int late_seek(void *st, uint64_t ms) { (void)st; (void)ms; return 0; }
+static void late_close(void *st) { (void)st; }
+static int late_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
+static const struct mm_source_ops late_ops = { .open = late_open, .read = late_read, .seek = late_seek, .close = late_close };
+static const struct mm_plugin latesrc = { .abi = MM_ABI, .name = "late", .schemes = "late", .init = late_init, .source = &late_ops };
+
 /* The control plugin under test. */
 static const struct mm_host *H;
 static uint32_t g_seen;
@@ -32,7 +59,8 @@ static int ctl_init(const struct mm_host *h, void **priv)
 	H = h;
 	*priv = NULL;
 	if (h->size < sizeof(struct mm_host) || !h->command || !h->subscribe) return -1;
-	return h->subscribe(h, MM_EV_STATE | MM_EV_TRACK | MM_EV_VOLUME | MM_EV_SEEK | MM_EV_QUEUE, on_event, NULL);
+	return h->subscribe(h, MM_EV_STATE | MM_EV_TRACK | MM_EV_VOLUME | MM_EV_SEEK | MM_EV_QUEUE | MM_EV_META,
+	                    on_event, NULL);
 }
 static const struct mm_plugin ctl = { .abi = MM_ABI, .name = "ctl", .init = ctl_init };
 
@@ -118,6 +146,50 @@ static int events(void)
 	return 0;
 }
 
+static int field_is(const char *key, const char *want)
+{
+	char line[256];
+	snprintf(line, sizeof(line), "\n%s: %s\n", key, want);
+	cmd("status", NULL, NULL);
+	char text[sizeof(R) + 2] = "\n";
+	strcat(text, R);
+	return strstr(text, line) != NULL;
+}
+
+static int late_info(void)
+{
+	struct mm_host old = *H;
+	old.size = (uint32_t)offsetof(struct mm_host, stream_update);
+	CHECK(MM_HOST_HAS(H, stream_update), "this host has stream_update");
+	CHECK(!MM_HOST_HAS(&old, stream_update), "a host built before it reads as not having it");
+
+	g_nlate = 0;
+	CHECK(cmd("play", "late:a", NULL) == MM_OK, "play a stream of unknown length");
+	step();
+	CHECK(field_is("duration", "-") && field_is("seekable", "no"), "it starts unknown and unseekable");
+	CHECK(cmd("seek", "5", NULL) == MM_ERR, "seek is refused while unknown");
+
+	struct mm_stream_info known = { 90000, MM_STREAM_SEEKABLE };
+	H->stream_update(H, &g_late[0], &known);
+	uint32_t ev = step();
+	CHECK(ev & MM_EV_META, "an update to the playing item is a meta event");
+	CHECK(field_is("duration", "90.000") && field_is("seekable", "yes"), "status shows the reported length");
+	CHECK(cmd("seek", "5", NULL) == MM_OK, "and seek now works");
+	step();
+
+	/* Preload a second stream, update it while it waits: no event yet. */
+	H->stream_update(H, &g_late[3], &known); /* not open: ignored */
+	CHECK(!(step() & MM_EV_META), "an update for a stream that is not open does nothing");
+	CHECK(player_preload("late:b", R, sizeof(R)) == 0, "preload");
+	struct mm_stream_info other = { 30000, MM_STREAM_SEEKABLE };
+	H->stream_update(H, &g_late[1], &other);
+	CHECK(!(step() & MM_EV_META), "an update to a preloaded item is not a meta event");
+	CHECK(field_is("duration", "90.000"), "and does not touch the playing item");
+	cmd("stop", NULL, NULL);
+	step();
+	return 0;
+}
+
 int main(void)
 {
 	config_override("host.sink=testsink");
@@ -125,12 +197,14 @@ int main(void)
 	loader_add(&testsink, NULL, "test");
 	loader_add(mm_static_entry_raw(), NULL, "builtin");
 	loader_add(&ctl, NULL, "test");
+	loader_add(&latesrc, NULL, "test");
 	loader_init_all();
 	CHECK(loader_state("ctl") == MM_PLUGIN_ACTIVE, "the control plugin got command and subscribe");
 	CHECK(player_init() == 0 && queue_init() == 0, "player and queue");
 
 	RUN(commands);
 	RUN(events);
+	RUN(late_info);
 
 	queue_fini();
 	player_fini();

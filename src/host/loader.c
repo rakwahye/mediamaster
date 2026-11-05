@@ -7,6 +7,7 @@
 #include "events.h"
 #include "ipc.h"
 #include "log.h"
+#include "player.h"
 #include <ctype.h>
 #include <dirent.h>
 #include <dlfcn.h>
@@ -65,6 +66,12 @@ static int h_command(const struct mm_host *h, int argc, const char *const *argv,
 static int h_subscribe(const struct mm_host *h, uint32_t mask, mm_event_fn cb, void *priv)
 {
 	return events_subscribe(slot_of(h)->p->name, mask, cb, priv);
+}
+
+static void h_stream_update(const struct mm_host *h, void *stream, const struct mm_stream_info *info)
+{
+	(void)h;
+	player_stream_update(stream, info);
 }
 
 /* ------------------------------------------------------------------ registry */
@@ -133,6 +140,7 @@ int loader_add(const struct mm_plugin *p, void *dl, const char *origin)
 	s->host.register_verb = h_register_verb;
 	s->host.command = h_command;
 	s->host.subscribe = h_subscribe;
+	s->host.stream_update = h_stream_update;
 	s->host.ctx = s;
 	s->state = in_list(config_get("host.disable"), p->name) ? MM_PLUGIN_DISABLED : MM_PLUGIN_LOADED;
 	s_n++;

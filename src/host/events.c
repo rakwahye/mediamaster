@@ -29,6 +29,7 @@ static struct {
 	uint32_t item;
 	int volume;
 	uint32_t seeks;
+	uint32_t metas;
 	uint64_t queue_gen;
 } s_last;
 
@@ -67,6 +68,7 @@ uint32_t events_poll(void)
 	uint32_t item = player_item();
 	int volume = player_volume();
 	uint32_t seeks = player_seek_count();
+	uint32_t metas = player_meta_count();
 	uint64_t qgen = queue_generation();
 
 	uint32_t ev = 0;
@@ -75,6 +77,7 @@ uint32_t events_poll(void)
 		if (item != s_last.item) ev |= MM_EV_TRACK;
 		if (volume != s_last.volume) ev |= MM_EV_VOLUME;
 		if (seeks != s_last.seeks) ev |= MM_EV_SEEK;
+		if (metas != s_last.metas) ev |= MM_EV_META;
 		if (qgen != s_last.queue_gen) ev |= MM_EV_QUEUE;
 	}
 	s_last.valid = 1;
@@ -82,6 +85,7 @@ uint32_t events_poll(void)
 	s_last.item = item;
 	s_last.volume = volume;
 	s_last.seeks = seeks;
+	s_last.metas = metas;
 	s_last.queue_gen = qgen;
 	if (!ev) return 0;
 

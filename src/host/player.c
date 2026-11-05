@@ -71,6 +71,7 @@ static struct {
 	atomic_int reader_done;
 	atomic_uint_least64_t dec_frames; /* frames of dec read so far */
 	atomic_uint seeks;
+	atomic_uint metas;
 
 	/* Shared with the sink thread. */
 	struct mm_ring play, tap;
@@ -604,6 +605,19 @@ uint32_t player_item(void)
 }
 
 uint32_t player_seek_count(void) { return atomic_load(&P.seeks); }
+uint32_t player_meta_count(void) { return atomic_load(&P.metas); }
+
+void player_stream_update(void *stream, const struct mm_stream_info *info)
+{
+	if (!stream || !info) return;
+	pthread_mutex_lock(&P.slock);
+	int spk = 0;
+	if (P.spk.stream == stream) { P.spk.info = *info; spk = 1; }
+	if (P.dec.stream == stream) P.dec.info = *info;
+	if (P.nxt.stream == stream) P.nxt.info = *info;
+	pthread_mutex_unlock(&P.slock);
+	if (spk) atomic_fetch_add(&P.metas, 1);
+}
 
 void player_current_uri(char *buf, size_t cap)
 {
