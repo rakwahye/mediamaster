@@ -192,6 +192,7 @@ int main(void)
 	snprintf(cmd, sizeof(cmd), "printf '#!/bin/sh\\ntrap \"\" TERM\\nwhile :; do sleep 0.05; done\\n' > '%s/stubborn.sh' && chmod +x '%s/stubborn.sh'", D, D);
 	CHECK(system(cmd) == 0, "fixture: stubborn");
 
+	config_override("ffmpeg.index=off"); /* do not index the real music folder */
 	config_load(NULL);
 	CHECK(loader_add(mm_static_entry_ffmpeg(), NULL, "builtin") == 0, "plugin accepted");
 	loader_init_all();

@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define MAX_DEPTH 8
 #define TAG "catalog"
@@ -232,11 +233,19 @@ static void search_one(void *ctx, const char *scheme, const char *name)
 	struct search *s = ctx;
 	char uri[1024], err[256];
 	if (s->stop) return;
+	struct timespec t0, t1;
 	snprintf(uri, sizeof(uri), "%s:search:%s", scheme, s->query);
 	s->left = s->max;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
 	int rc = catalog_list(uri, 0, counted, s, err, sizeof(err));
-	if (rc == 0) s->sources++;
-	else if (rc != MM_NOT_A_LIST) LOGD(TAG, "%s: no search: %s", name, err);
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	long ms = (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
+	if (rc == 0) {
+		s->sources++;
+		LOGD(TAG, "search %s: %ld results in %ld ms", name, s->max - s->left, ms);
+	} else if (rc != MM_NOT_A_LIST) {
+		LOGD(TAG, "search %s: none (%s) in %ld ms", name, err, ms);
+	}
 }
 
 static int v_search(void *priv, struct mm_verb_ctx *c)

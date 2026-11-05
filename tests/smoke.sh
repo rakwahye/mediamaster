@@ -15,8 +15,9 @@ fail() { echo "FAIL smoke: $*" >&2; [ -f "$T/log" ] && sed 's/^/  log| /' "$T/lo
 export MM_SOCK="$T/mm.sock"
 MMCTL="$B/mmctl"
 
-start() { # extra -o args
-	"$B/mediamaster" -c "$T/config" -o "host.socket=$MM_SOCK" "$@" 2>>"$T/log" &
+start() { # extra -o args. HOME and the cache are the temp dir: the
+	# music index must not scan, or write next to, the real ones.
+	HOME="$T" XDG_CACHE_HOME="$T/cache" "$B/mediamaster" -c "$T/config" -o "host.socket=$MM_SOCK" "$@" 2>>"$T/log" &
 	PID=$!
 	i=0
 	until "$MMCTL" version >/dev/null 2>&1; do
@@ -123,6 +124,8 @@ if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
 	mkdir -p "$A/CD2" "$T/lib/Other"
 	for f in "2 two.flac" "10 ten.FLAC" ".hidden.flac" "CD2/1 a.flac"; do cp "$T/tone one.flac" "$A/$f"; done
 	echo text >"$A/notes.txt"
+	ln -s .. "$A/up"            # a loop back up the tree
+	ln -s "$T/lib" "$A/CD2/top" # and another, further down
 	"$MMCTL" browse "$A/" >"$T/br" || fail "browse a folder"
 	printf 'list\t%s\tCD2\t-\t-\t-\ntrack\t%s\t2 two.flac\t-\t-\t-\ntrack\t%s\t10 ten.FLAC\t-\t-\t-\n' \
 		"$A/CD2" "$A/2 two.flac" "$A/10 ten.FLAC" >"$T/want"
@@ -139,7 +142,12 @@ if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
 	"$MMCTL" queue add "$A" | grep -qx 'ok added 1-3' || fail "queue add of a folder"
 	"$MMCTL" queue | sed -n 's/^.. *[0-9]*  //p' | tr '\n' '|' |
 		grep -qx "$A/CD2/1 a.flac|$A/2 two.flac|$A/10 ten.FLAC|" || fail "folder order: $("$MMCTL" queue)"
-	"$MMCTL" search TWO | grep -qx "track	$A/2 two.flac	2 two.flac	-	-	-" || fail "search: $("$MMCTL" search TWO)"
+	i=0 # the index of the new music folder is built in the background
+	until "$MMCTL" search TWO | grep -qx "track	$A/2 two.flac	2 two.flac	-	-	-"; do
+		i=$((i + 1)); [ $i -lt 50 ] || fail "search: $("$MMCTL" search TWO)"
+		sleep 0.1
+	done
+	[ -s "$T/cache/mediamaster/music.idx" ] || fail "the index is not kept in the cache"
 	"$MMCTL" search album cd2 | cut -f2 | grep -qx "$A/CD2/1 a.flac" || fail "search: every word, in the path"
 	"$MMCTL" search zzz | grep -qx "no results" || fail "search without hits"
 	"$MMCTL" queue clear >/dev/null

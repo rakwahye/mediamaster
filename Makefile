@@ -88,11 +88,12 @@ $(BUILD)/obj-mmctl/%.o: src/mmctl/%.c $(HDRS)
 	@mkdir -p $(@D)
 	$(CC) $(HOST_CFLAGS) -c $< -o $@
 
-$(BUILD)/static/%.o: $$(wildcard plugins/$$*/*.c) include/mm_plugin.h
+# A plugin may be several files: built and partially linked into one object.
+$(BUILD)/static/%.o: $$(wildcard plugins/$$*/*.c plugins/$$*/*.h) include/mm_plugin.h
 	@mkdir -p $(@D)
-	$(CC) $(PLUG_CFLAGS) $(CFLAGS_$*) -DMM_PLUGIN_STATIC -c $(filter %.c,$^) -o $@
+	$(CC) $(PLUG_CFLAGS) $(CFLAGS_$*) -DMM_PLUGIN_STATIC -r -nostdlib $(filter %.c,$^) -o $@
 
-$(BUILD)/plugins/%.so: $$(wildcard plugins/$$*/*.c) include/mm_plugin.h
+$(BUILD)/plugins/%.so: $$(wildcard plugins/$$*/*.c plugins/$$*/*.h) include/mm_plugin.h
 	@mkdir -p $(@D)
 	$(CC) $(PLUG_CFLAGS) $(CFLAGS_$*) $(filter %.c,$^) $(PLUG_LDFLAGS) $(LIBS_$*) -lpthread -o $@
 
@@ -143,7 +144,11 @@ $(T)/test-events: tests/events_test.c $(PLAYER_DEPS) $(BUILD)/static/raw.o $(HDR
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
 
-TESTS := $(T)/test-events $(T)/test-queue $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player $(T)/test-ffmpeg
+$(T)/test-ffidx: tests/ffidx_test.c plugins/ffmpeg/index.c plugins/ffmpeg/index.h $(HDRS) tests/check.h
+	@mkdir -p $(@D)
+	$(CC) $(TEST_CFLAGS) -Iplugins/ffmpeg $(filter %.c,$^) -lpthread -o $@
+
+TESTS := $(T)/test-ffidx $(T)/test-events $(T)/test-queue $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player $(T)/test-ffmpeg
 
 unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-config
@@ -154,6 +159,7 @@ unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-queue
 	@$(T)/test-events
 	@$(T)/test-ffmpeg
+	@$(T)/test-ffidx
 
 smoke: all
 	@sh tests/smoke.sh $(BUILD)
