@@ -36,24 +36,45 @@ static const struct mm_plugin good = {
 	.init = good_init, .fini = good_fini, .reload = good_reload, .caps = good_caps,
 };
 static const struct mm_plugin good_again = { .abi = MM_ABI, .name = "good", .init = good_init };
-static const struct mm_plugin old_abi = { .abi = MM_ABI + 1, .name = "future", .init = good_init };
+/* The fit rule: same major, built for a minor no newer than the host's. */
+static const struct mm_plugin newer_minor = { .abi = MM_ABI + 1, .name = "future", .init = good_init };
+static const struct mm_plugin other_major = { .abi = MM_ABI_MAKE(MM_ABI_MAJOR + 1, 0), .name = "next", .init = good_init };
+static const struct mm_plugin no_point = { .abi = MM_ABI_MAJOR, .name = "ancient", .init = good_init };
+static int plain_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
+static const struct mm_plugin older_minor = { .abi = MM_ABI_MAKE(MM_ABI_MAJOR, 0), .name = "older", .init = plain_init };
 static const struct mm_plugin bad_name = { .abi = MM_ABI, .name = "has.dot", .init = good_init };
 static const struct mm_plugin no_init = { .abi = MM_ABI, .name = "noinit" };
 static const struct mm_plugin failing = { .abi = MM_ABI, .name = "failing", .init = bad_init, .fini = bad_fini };
 static const struct mm_plugin off = { .abi = MM_ABI, .name = "off", .init = good_init };
 
+/* The rule itself, with numbers the current SDK does not have. */
+static int fit_rule(void)
+{
+	uint32_t v30 = MM_ABI_MAKE(3, 0), v31 = MM_ABI_MAKE(3, 1), v40 = MM_ABI_MAKE(4, 0);
+	CHECK(MM_ABI_MAJOR_OF(v31) == 3 && MM_ABI_MINOR_OF(v31) == 1, "major and minor come back out");
+	CHECK(MM_ABI_FITS(v30, v30), "the same version fits");
+	CHECK(MM_ABI_FITS(v30, v31), "built for 3.0, offered 3.1: fits (an addition it ignores)");
+	CHECK(!MM_ABI_FITS(v31, v30), "built for 3.1, offered 3.0: does not (it may want the addition)");
+	CHECK(!MM_ABI_FITS(v30, v40) && !MM_ABI_FITS(v40, v30), "another major never fits, either way");
+	CHECK(MM_ABI_MAJOR_OF(3) == 0, "a number from before the point reads as major 0");
+	return 0;
+}
+
 static int registry(void)
 {
 	CHECK(loader_add(&good, NULL, "builtin") == 0, "a well-formed plugin is accepted");
 	CHECK(loader_add(&good_again, NULL, "x.so") != 0, "a duplicate name is refused");
-	CHECK(loader_add(&old_abi, NULL, "x.so") != 0, "an ABI mismatch is refused");
+	CHECK(loader_add(&newer_minor, NULL, "x.so") != 0, "built for a newer minor than the host offers: refused");
+	CHECK(loader_add(&other_major, NULL, "x.so") != 0, "another major: refused");
+	CHECK(loader_add(&no_point, NULL, "x.so") != 0, "a number from before the point: refused");
 	CHECK(loader_add(&bad_name, NULL, "x.so") != 0, "a name with '.' is refused (it would break config prefixes)");
 	CHECK(loader_add(&no_init, NULL, "x.so") != 0, "a plugin without init is refused");
 	CHECK(loader_add(NULL, NULL, "x.so") != 0, "a NULL entry result is refused");
 	CHECK(loader_add(&failing, NULL, "builtin") == 0, "a plugin that will fail init still loads");
 	CHECK(loader_add(&off, NULL, "builtin") == 0, "a disabled plugin is still listed");
 	CHECK(loader_state("off") == MM_PLUGIN_DISABLED, "host.disable marks it disabled");
-	CHECK(loader_count() == 3, "only accepted plugins count");
+	CHECK(loader_add(&older_minor, NULL, "builtin") == 0, "built for an older minor of this major: accepted");
+	CHECK(loader_count() == 4, "only accepted plugins count");
 	return 0;
 }
 
@@ -135,6 +156,7 @@ int main(int argc, char **argv)
 	config_override("good.colour=teal");
 	config_override("host.disable=other, off");
 	config_load(NULL);
+	RUN(fit_rule);
 	RUN(registry);
 	if (dlopen_scan(dir) != 0) return 1;
 	RUN(lifecycle);

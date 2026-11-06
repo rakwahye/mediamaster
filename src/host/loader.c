@@ -130,8 +130,14 @@ int loader_add(const struct mm_plugin *p, void *dl, const char *origin)
 		refuse(origin, "entry returned NULL");
 		return -1;
 	}
-	if (p->abi != MM_ABI) {
-		refuse(origin, "plugin ABI %u, host ABI %u", (unsigned)p->abi, (unsigned)MM_ABI);
+	if (MM_ABI_MAJOR_OF(p->abi) == 0) {
+		refuse(origin, "built before abi %u.%u, when the number had no point (says %u): rebuild it",
+		       MM_ABI_MAJOR, MM_ABI_MINOR, (unsigned)p->abi);
+		return -1;
+	}
+	if (!MM_ABI_FITS(p->abi, MM_ABI)) {
+		refuse(origin, "built for abi %u.%u, host offers %u.%u", MM_ABI_MAJOR_OF(p->abi), MM_ABI_MINOR_OF(p->abi),
+		       MM_ABI_MAJOR, MM_ABI_MINOR);
 		return -1;
 	}
 	if (!name_ok(p->name)) {
@@ -446,7 +452,8 @@ void loader_list(FILE *f)
 	fprintf(f, "name\tversion\tabi\tstate\torigin\n");
 	for (size_t i = 0; i < s_n; i++) {
 		const struct slot *s = &s_slots[i];
-		fprintf(f, "%s\t%s\t%u\t%s\t%s\n", s->p->name, s->p->version ? s->p->version : "?", (unsigned)s->p->abi,
+		fprintf(f, "%s\t%s\t%u.%u\t%s\t%s\n", s->p->name, s->p->version ? s->p->version : "?",
+		        MM_ABI_MAJOR_OF(s->p->abi), MM_ABI_MINOR_OF(s->p->abi),
 		        s->state == MM_PLUGIN_DISABLED ? "disabled" : "ok", s->origin);
 	}
 	for (size_t i = 0; i < s_nrefused; i++)

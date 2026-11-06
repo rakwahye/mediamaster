@@ -84,7 +84,7 @@ static int verb_plugins(void *priv, struct mm_verb_ctx *c)
 static int verb_version(void *priv, struct mm_verb_ctx *c)
 {
 	(void)priv;
-	snprintf(c->reply, c->reply_len, "mediamaster %s abi %d", MM_VERSION, MM_ABI);
+	snprintf(c->reply, c->reply_len, "mediamaster %s abi %u.%u", MM_VERSION, MM_ABI_MAJOR, MM_ABI_MINOR);
 	return MM_OK;
 }
 
@@ -155,7 +155,7 @@ int main(int argc, char **argv)
 		case 'd': debug = 1; break;
 		case 'D': detach = 1; break;
 		case 'L': list = 1; break;
-		case 'V': printf("mediamaster %s abi %d\n", MM_VERSION, MM_ABI); return 0;
+		case 'V': printf("mediamaster %s abi %u.%u\n", MM_VERSION, MM_ABI_MAJOR, MM_ABI_MINOR); return 0;
 		case 'h': usage(stdout); return 0;
 		default: usage(stderr); return 2;
 		}

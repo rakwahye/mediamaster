@@ -6,7 +6,7 @@
 #   make SAN=tsan test   same under ThreadSanitizer      -> build/tsan/
 #   make check-licenses  every source file carries an SPDX line
 #   make install PREFIX=/usr/local   daemon, mmctl, mm-update, plugins not built in,
-#                                    and the plugin SDK: mm_plugin.h and mediamaster.pc
+#                                    and the SDK: mm_plugin.h, mm_client.h, mediamaster.pc
 #   make uninstall
 
 CC         ?= cc
@@ -17,7 +17,7 @@ INCLUDEDIR ?= $(PREFIX)/include
 PLUGIN_DIR ?= $(LIBDIR)/mediamaster/plugins
 PKGCONFIG_DIR ?= $(LIBDIR)/pkgconfig
 VERSION    := 0.1.0
-ABI        := $(shell sed -n 's/^\#define MM_ABI \([0-9]*\).*/\1/p' include/mm_plugin.h)
+ABI        := $(shell sed -n 's/^\#define MM_ABI_MAJOR \([0-9]*\).*/\1/p' include/mm_plugin.h).$(shell sed -n 's/^\#define MM_ABI_MINOR \([0-9]*\).*/\1/p' include/mm_plugin.h)
 
 SAN ?=
 ifeq ($(SAN),)
@@ -210,13 +210,14 @@ install: all
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(PLUGIN_DIR) $(DESTDIR)$(INCLUDEDIR)/mediamaster $(DESTDIR)$(PKGCONFIG_DIR)
 	install -m 755 $(BUILD)/mediamaster $(BUILD)/mmctl tools/mm-update $(DESTDIR)$(BINDIR)
 	$(if $(INSTALL_SO),install -m 644 $(INSTALL_SO) $(DESTDIR)$(PLUGIN_DIR))
-	install -m 644 include/mm_plugin.h $(DESTDIR)$(INCLUDEDIR)/mediamaster
+	install -m 644 include/mm_plugin.h include/mm_client.h $(DESTDIR)$(INCLUDEDIR)/mediamaster
 	install -m 644 $(BUILD)/mediamaster.pc $(DESTDIR)$(PKGCONFIG_DIR)
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/mediamaster $(DESTDIR)$(BINDIR)/mmctl $(DESTDIR)$(BINDIR)/mm-update
 	rm -f $(foreach p,$(filter-out $(PLUGINS_STATIC),$(PLUGINS)),$(DESTDIR)$(PLUGIN_DIR)/$(p).so)
-	rm -f $(DESTDIR)$(INCLUDEDIR)/mediamaster/mm_plugin.h $(DESTDIR)$(PKGCONFIG_DIR)/mediamaster.pc
+	rm -f $(DESTDIR)$(INCLUDEDIR)/mediamaster/mm_plugin.h $(DESTDIR)$(INCLUDEDIR)/mediamaster/mm_client.h \
+	      $(DESTDIR)$(PKGCONFIG_DIR)/mediamaster.pc
 	-rmdir $(DESTDIR)$(INCLUDEDIR)/mediamaster $(DESTDIR)$(PLUGIN_DIR) $(DESTDIR)$(LIBDIR)/mediamaster 2>/dev/null
 
 clean:

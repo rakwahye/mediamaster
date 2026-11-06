@@ -11,7 +11,7 @@ fail() { echo "install: FAIL: $*"; exit 1; }
 
 make -s install DESTDIR="$T" >/dev/null || fail "make install"
 P="$T/usr/local"
-for f in bin/mediamaster bin/mmctl bin/mm-update include/mediamaster/mm_plugin.h lib/pkgconfig/mediamaster.pc; do
+for f in bin/mediamaster bin/mmctl bin/mm-update include/mediamaster/mm_plugin.h include/mediamaster/mm_client.h lib/pkgconfig/mediamaster.pc; do
 	[ -f "$P/$f" ] || fail "missing $f"
 done
 for p in null raw ffmpeg library; do
@@ -19,7 +19,7 @@ for p in null raw ffmpeg library; do
 done
 [ -f "$P/lib/mediamaster/plugins/mpris.so" ] || [ ! -f "$B/plugins/mpris.so" ] || fail "mpris.so not installed"
 
-abi=$(sed -n 's/^#define MM_ABI \([0-9]*\).*/\1/p' include/mm_plugin.h)
+abi=$(sed -n 's/^#define MM_ABI_MAJOR \([0-9]*\).*/\1/p' include/mm_plugin.h).$(sed -n 's/^#define MM_ABI_MINOR \([0-9]*\).*/\1/p' include/mm_plugin.h)
 # Only the pkg-config calls look in the scratch root; make uninstall below
 # must still see the system's libraries.
 pc() { PKG_CONFIG_LIBDIR="$P/lib/pkgconfig" PKG_CONFIG_SYSROOT_DIR="$T" pkg-config "$@"; }
@@ -39,6 +39,26 @@ cc -std=c99 -pedantic -Wall -fPIC -shared $(pc --cflags mediamaster) "$T/hello.c
 	fail "building against the SDK"
 "$P/bin/mediamaster" -L -o "host.plugin_dir=$T" -o host.builtins=0 2>/dev/null | grep -q "^hello	1.0	$abi	ok	$T/hello.so" ||
 	fail "-L: $("$P/bin/mediamaster" -L -o "host.plugin_dir=$T" -o host.builtins=0 2>&1)"
+
+# A client built the same way: the socket rule and the version check come
+# from mm_client.h alone, no host source.
+cat >"$T/client.c" <<'C'
+#include "mm_client.h"
+int main(int argc, char **argv)
+{
+	char sock[256];
+	struct mm_version v;
+	if (argc > 1) return mm_version_read(argv[1], &v) == 0 && MM_ABI_FITS(MM_ABI, v.abi) ? 0 : 1;
+	puts(mm_client_socket(sock, sizeof(sock)));
+	return 0;
+}
+C
+cc -std=c99 -pedantic -Wall $(pc --cflags mediamaster) "$T/client.c" -o "$T/client" || fail "a client against the SDK"
+[ "$(MM_SOCK=/run/x.sock "$T/client")" = /run/x.sock ] || fail "client socket: $(MM_SOCK=/run/x.sock "$T/client")"
+[ "$(MM_SOCK= XDG_RUNTIME_DIR=/run/u "$T/client")" = /run/u/mediamaster.sock ] || fail "client socket, runtime dir"
+"$T/client" "$("$P/bin/mediamaster" -V)" || fail "the client does not fit the daemon it was built against"
+"$T/client" "mediamaster 0.0.1 abi 99.0" && fail "the client took another major"
+"$T/client" "mediamaster 0.0.1 abi $abi.9" && fail "the client took a malformed number"
 
 make -s uninstall DESTDIR="$T" >/dev/null || fail "make uninstall"
 left=$(find "$T/usr" -type f 2>/dev/null)

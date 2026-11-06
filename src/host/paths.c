@@ -3,6 +3,7 @@
  * @brief XDG path resolution. */
 
 #include "paths.h"
+#include "mm_client.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,15 +57,11 @@ const char *mm_paths_log_file(void)
 	return buf;
 }
 
+/* The rule clients follow (mm_client.h) is the one the daemon follows. */
 const char *mm_paths_socket(void)
 {
 	static char buf[PATH_CAP];
-	if (buf[0]) return buf;
-	const char *env = getenv("MM_SOCK");
-	const char *rt = getenv("XDG_RUNTIME_DIR");
-	if (env && *env) snprintf(buf, sizeof(buf), "%s", env);
-	else if (rt && rt[0] == '/') snprintf(buf, sizeof(buf), "%s/" MM_APP ".sock", rt);
-	else snprintf(buf, sizeof(buf), "/tmp/" MM_APP "-%u.sock", (unsigned)getuid());
+	if (!buf[0]) mm_client_socket(buf, sizeof(buf)); /* too long: truncated, fails at connect */
 	return buf;
 }
 

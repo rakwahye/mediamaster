@@ -2,7 +2,9 @@
 /** @file mm_plugin.h
  * @brief mediamaster plugin ABI.
  *
- * The only header a plugin sees. Strict C99, no host internals.
+ * The only header a plugin sees. Strict C99, no host internals. A client
+ * of the daemon's socket wants mm_client.h, which includes this one for
+ * the ABI number and its rule.
  *
  * A plugin is a shared object exporting one symbol, `mm_plugin_entry`,
  * that returns a static `struct mm_plugin`. The plugin implements any
@@ -27,8 +29,41 @@
 extern "C" {
 #endif
 
-/* 2: catalog ops gained `radio`. 3: and `match`. */
-#define MM_ABI 3
+/* ------------------------------------------------------------------ ABI
+ *
+ * One number, MAJOR.MINOR, for everything the daemon shows the outside:
+ * the structs in this header and the IPC protocol (mm_client.h). A
+ * plugin or client compiles it in from the SDK it was built against and
+ * says so (`abi` below; a client's own copy). At the boundary one rule
+ * decides, MM_ABI_FITS:
+ *
+ *     same MAJOR, and built for a MINOR no newer than what is offered.
+ *
+ * MINOR: an addition the other side can ignore. A field at the end of
+ *   an ops table or of mm_host (behind its `size`), a flag, an enum
+ *   value, a verb, a field or a line in a reply that a client skips.
+ *   Nothing already built needs a rebuild.
+ * MAJOR: a shape or a meaning changes. A field moves or goes, a reply
+ *   says something else. Everything rebuilds (mm-update does that).
+ *
+ * 3.0 is the first with points; what was built before cannot say its
+ * version in this form, and the host refuses it as such. */
+#define MM_ABI_MAJOR 3
+#define MM_ABI_MINOR 0
+
+#define MM_ABI_MAKE(major, minor) (((uint32_t)(major) << 16) | ((uint32_t)(minor) & 0xffffu))
+#define MM_ABI_MAJOR_OF(abi)      ((unsigned)((uint32_t)(abi) >> 16))
+#define MM_ABI_MINOR_OF(abi)      ((unsigned)((uint32_t)(abi) & 0xffffu))
+
+/** The ABI this SDK describes, as one number: what a plugin puts in
+ * `abi`, what a client compares the daemon against. */
+#define MM_ABI MM_ABI_MAKE(MM_ABI_MAJOR, MM_ABI_MINOR)
+
+/** Does something built for ABI `built` work with something that offers
+ * ABI `offered`? The host asks it of a plugin, a client of the daemon. */
+#define MM_ABI_FITS(built, offered) \
+	(MM_ABI_MAJOR_OF(built) == MM_ABI_MAJOR_OF(offered) && \
+	 MM_ABI_MINOR_OF(built) <= MM_ABI_MINOR_OF(offered))
 
 /** Policy attributes. The host uses these for the offline switch, rate
  * budgets and credential handling, never for dispatch. */
@@ -85,10 +120,10 @@ typedef void (*mm_event_fn)(void *priv, uint32_t events);
 struct mm_stream_info; /* defined with the source interface below */
 
 /** Services the host offers a plugin. Each plugin gets its own copy, so
- * the host knows who is calling. Check `size` before touching a field
- * added after ABI 1. */
+ * the host knows who is calling. Check `size` (MM_HOST_HAS) before
+ * touching a field added after the first version. */
 struct mm_host {
-	uint32_t abi;
+	uint32_t abi;  /* MM_ABI of the host */
 	uint32_t size; /* sizeof(struct mm_host) as the host built it */
 
 	/** Log tagged with the plugin name. printf-style. */
@@ -282,7 +317,7 @@ struct mm_store_ops;
 struct mm_orch_ops;
 
 struct mm_plugin {
-	uint32_t abi;   /* MM_ABI the plugin was built against */
+	uint32_t abi;   /* MM_ABI of the SDK the plugin was built against */
 	uint32_t attrs; /* enum mm_attr bits */
 	const char *name;    /* unique, no '.' or whitespace; config prefix */
 	const char *version;
