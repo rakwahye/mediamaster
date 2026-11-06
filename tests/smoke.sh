@@ -77,6 +77,49 @@ if "$MMCTL" play nosuch:x >/dev/null 2>&1; then fail "unknown scheme should fail
 "$MMCTL" stop >/dev/null
 [ "$(field state)" = stopped ] || fail "stop"
 
+# watch: the connection stays open, a line per tick that something fired
+watched() { # file pattern: wait for a line
+	i=0
+	until grep -qE "$2" "$1"; do
+		i=$((i + 1)); [ $i -lt 50 ] || fail "watch: no line /$2/ in: $(tr '\n' '|' <"$1")"
+		sleep 0.05
+	done
+}
+"$MMCTL" watch >"$T/watch" &
+W1=$!
+"$MMCTL" watch volume >"$T/watchv" &
+W2=$!
+watched "$T/watch" '^ok watching state track volume seek queue meta$'
+watched "$T/watchv" '^ok watching volume$'
+# Changes inside one tick (50 ms) share a line, so let earlier ones go
+# by, then look at the lines each command brings.
+expect() { # file name command...
+	f=$1 want=$2
+	shift 2
+	n=$(wc -l <"$f")
+	"$@" >/dev/null
+	i=0
+	until tail -n +$((n + 1)) "$f" | grep -qw "$want"; do
+		i=$((i + 1)); [ $i -lt 100 ] || fail "watch: $* gave $(tail -n +$((n + 1)) "$f" | tr '\n' '|')"
+		sleep 0.02
+	done
+}
+sleep 0.15
+expect "$T/watch" track "$MMCTL" play sine:440
+expect "$T/watch" state "$MMCTL" pause
+expect "$T/watchv" volume "$MMCTL" vol 40
+expect "$T/watch" state "$MMCTL" stop
+grep -qv '^ok\|^volume$' "$T/watchv" && fail "watch volume got more: $(cat "$T/watchv")"
+if "$MMCTL" watch nosuch >/dev/null 2>&1; then fail "watch of an unknown event should fail"; fi
+kill $W1 $W2
+wait $W1 $W2 2>/dev/null || true
+"$MMCTL" vol 50 >/dev/null # the gone watchers are noticed and dropped
+"$MMCTL" status >/dev/null || fail "daemon after watchers left"
+"$MMCTL" watch >"$T/watch" &
+W1=$!
+watched "$T/watch" '^ok watching'
+kill $W1; wait $W1 2>/dev/null || true
+
 # seek on a finite tone
 "$MMCTL" play sine:440:30 >/dev/null || fail "finite play"
 "$MMCTL" seek 20 | grep -q '^ok' || fail "seek"

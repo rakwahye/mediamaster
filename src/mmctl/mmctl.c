@@ -84,6 +84,7 @@ static int command(int argc, char **argv)
 		if (r <= 0) break;
 		if (first) { is_err = r >= 3 && !memcmp(buf, "err", 3); first = 0; }
 		fwrite(buf, 1, (size_t)r, is_err ? stderr : stdout);
+		fflush(is_err ? stderr : stdout); /* watch streams */
 	}
 	close(fd);
 	if (first) {

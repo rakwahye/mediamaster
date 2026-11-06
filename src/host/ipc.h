@@ -46,6 +46,15 @@ void ipc_unregister_owner(const char *owner);
 int ipc_dispatch(int argc, char *const *argv, const char *body, size_t body_len,
                  char *reply, size_t reply_len);
 
+/** Hands a client's connection to `fn` instead of answering it once.
+ * fn runs on the IPC thread, writes its own reply, and @returns 1 to keep
+ * the fd (it then owns it) or 0 for the listener to close it. */
+typedef int (*ipc_adopt_fn)(int fd, int argc, char *const *argv);
+
+/** Connections whose verb is `verb` go to `fn` (one such verb; NULL
+ * clears it). The verb should also be registered, for help. */
+void ipc_set_adopt(const char *verb, ipc_adopt_fn fn);
+
 /** @returns 1 if `verb` is registered. */
 int ipc_has_verb(const char *verb);
 

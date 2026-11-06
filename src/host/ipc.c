@@ -30,6 +30,8 @@ struct verb {
 static pthread_mutex_t s_reg_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct verb s_verbs[IPC_MAX_VERBS];
 static int s_nverbs;
+static char s_adopt_verb[32];
+static ipc_adopt_fn s_adopt;
 
 static int s_listen = -1;
 static int s_wake = -1;
@@ -92,6 +94,14 @@ void ipc_unregister_owner(const char *owner)
 		s_verbs[w++] = s_verbs[i];
 	}
 	s_nverbs = w;
+	pthread_mutex_unlock(&s_reg_lock);
+}
+
+void ipc_set_adopt(const char *verb, ipc_adopt_fn fn)
+{
+	pthread_mutex_lock(&s_reg_lock);
+	snprintf(s_adopt_verb, sizeof(s_adopt_verb), "%s", verb && fn ? verb : "");
+	s_adopt = verb ? fn : NULL;
 	pthread_mutex_unlock(&s_reg_lock);
 }
 
@@ -257,7 +267,8 @@ int ipc_dispatch(int argc, char *const *argv, const char *body, size_t body_len,
 	return rc;
 }
 
-static void handle_client(int fd)
+/* @returns 1 if the connection was adopted and must stay open. */
+static int handle_client(int fd)
 {
 	static char buf[IPC_FRAME_MAX]; /* IPC thread only */
 	static char reply[IPC_REPLY_MAX];
@@ -266,15 +277,21 @@ static void handle_client(int fd)
 
 	if (frame_read(fd, buf, sizeof(buf), &f) != 0) {
 		send_str(fd, "err bad frame\n");
-		return;
+		return 0;
 	}
+	pthread_mutex_lock(&s_reg_lock);
+	ipc_adopt_fn adopt = s_adopt && !strcmp(f.argv[0], s_adopt_verb) ? s_adopt : NULL;
+	pthread_mutex_unlock(&s_reg_lock);
+	if (adopt) return adopt(fd, f.argc, f.argv);
+
 	int rc = ipc_dispatch(f.argc, f.argv, f.body, f.body_len, reply, sizeof(reply));
 	if (rc == MM_REPLY_RAW) {
 		send_str(fd, reply);
-		return;
+		return 0;
 	}
 	snprintf(out, sizeof(out), "%s%s%s\n", rc == MM_OK ? "ok" : "err", reply[0] ? " " : "", reply);
 	send_str(fd, out);
+	return 0;
 }
 
 static int peer_is_us(int fd)
@@ -303,9 +320,10 @@ static void *ipc_thread(void *arg)
 		struct timeval tv = { IPC_IO_TIMEOUT_S, 0 };
 		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-		if (peer_is_us(fd)) handle_client(fd);
+		int kept = 0;
+		if (peer_is_us(fd)) kept = handle_client(fd);
 		else LOGW(TAG, "rejected connection from another uid");
-		close(fd);
+		if (!kept) close(fd);
 	}
 	return NULL;
 }

@@ -20,6 +20,7 @@
 #include "queue.h"
 #include "catalog.h"
 #include "radio.h"
+#include "watch.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -203,6 +204,7 @@ int main(int argc, char **argv)
 	if (queue_init() != 0) LOGW(TAG, "some queue verbs could not be registered");
 	if (catalog_init() != 0) LOGW(TAG, "browse could not be registered");
 	if (radio_init() != 0) LOGW(TAG, "radio could not be registered");
+	if (watch_init() != 0) LOGW(TAG, "watch could not be registered");
 
 	const char *sock = config_get_str("host.socket", mm_paths_socket());
 	if (ipc_start(sock) != 0) {
@@ -224,7 +226,7 @@ int main(int argc, char **argv)
 		}
 		queue_tick();
 		radio_tick();
-		events_poll();
+		watch_tick(events_poll());
 		if (pr == 0) continue;
 		if (pf[0].revents & POLLIN) {
 			struct signalfd_siginfo si;
@@ -247,6 +249,7 @@ int main(int argc, char **argv)
 
 	LOGI(TAG, "shutting down");
 	ipc_stop();
+	watch_fini();
 	radio_fini();
 	queue_fini();
 	player_fini();

@@ -68,7 +68,7 @@ CFLAGS_mpris := $(shell pkg-config --cflags $(SDBUS_PC) 2>/dev/null) $(if $(filt
 LIBS_mpris := $(shell pkg-config --libs $(SDBUS_PC) 2>/dev/null)
 
 HOST_SRC := main.c log.c config.c paths.c ipc.c loader.c builtins.c ring.c player.c queue.c events.c \
-            catalog.c uri.c radio.c
+            catalog.c uri.c radio.c watch.c
 HOST_OBJ := $(addprefix $(BUILD)/host/,$(HOST_SRC:.c=.o)) \
             $(foreach p,$(PLUGINS_STATIC),$(BUILD)/static/$(p).o)
 MMCTL_OBJ := $(BUILD)/obj-mmctl/mmctl.o $(BUILD)/host/paths.o
