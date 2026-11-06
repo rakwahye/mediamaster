@@ -1,0 +1,125 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# mm-update: keep mediamaster and everything built for it current.
+#
+#   mm-update              pull, build and install every repository listed
+#   mm-update status       what is installed, what each repository is at
+#   mm-update add <repo>   list a repository: a local path, or a git URL
+#                          (cloned under $XDG_DATA_HOME/mediamaster/src)
+#
+# The list is ~/.config/mediamaster/repos, one per line, '#' for comments,
+# in the order they are built: put mediamaster first, since plugins build
+# against its installed SDK. Each repository is updated with git pull
+# --ff-only (when it tracks a remote), git submodule update --init, make,
+# make install. The first failure stops everything, with that make's
+# output in front of you. Installing uses sudo when the install prefix is
+# not writable; MM_SUDO overrides (MM_SUDO=doas, or MM_SUDO= for never).
+#
+# Plugins are files: a daemon that is running keeps the ones it loaded.
+# When one is running, the end of an update says so; restart it with
+# `mmctl quit; mediamaster -D`.
+
+set -u
+
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/mediamaster
+REPOS=$CONF/repos
+SRC=${XDG_DATA_HOME:-$HOME/.local/share}/mediamaster/src
+
+die() { echo "mm-update: $*" >&2; exit 1; }
+
+# Where mediamaster is installed, from its SDK; /usr/local until it is.
+prefix() { pkg-config --variable=prefix mediamaster 2>/dev/null || echo /usr/local; }
+
+sudo_for_install() {
+	if [ "${MM_SUDO+set}" = set ]; then printf '%s' "$MM_SUDO"; return; fi
+	p=$(prefix)
+	while [ ! -d "$p" ] && [ "$p" != / ]; do p=$(dirname "$p"); done
+	if [ -w "$p" ] || [ "$(id -u)" = 0 ]; then printf ''; else printf 'sudo'; fi
+}
+
+# The listed repositories, comments and blank lines dropped, ~ expanded.
+repos() {
+	[ -f "$REPOS" ] || return 0
+	sed -e 's/#.*//' -e 's/^[ \t]*//' -e 's/[ \t]*$//' -e '/^$/d' "$REPOS" |
+		while IFS= read -r r; do
+			case $r in "~"/*) r=$HOME${r#"~"} ;; esac
+			printf '%s\n' "$r"
+		done
+}
+
+update_one() {
+	r=$1
+	[ -d "$r" ] || die "$r: not a directory (mm-update add <url> clones one)"
+	echo "==> $r"
+	if git -C "$r" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1; then
+		git -C "$r" pull --ff-only || die "$r: git pull failed (local changes, or a diverged branch)"
+	else
+		echo "    (no upstream branch: not pulled)"
+	fi
+	[ -f "$r/.gitmodules" ] && { git -C "$r" submodule update --init || die "$r: submodules"; }
+	make -C "$r" || die "$r: make failed"
+	s=$(sudo_for_install)
+	[ -n "$s" ] && echo "    install needs $s"
+	$s make -C "$r" install || die "$r: make install failed"
+}
+
+cmd_update() {
+	n=0
+	for r in $(repos); do update_one "$r"; n=$((n + 1)); done
+	[ "$n" -gt 0 ] || die "nothing listed in $REPOS (mm-update add <repo>)"
+	echo "==> $n up to date"
+	if command -v mmctl >/dev/null && mmctl version >/dev/null 2>&1; then
+		echo "a daemon is running with the plugins it loaded at start; to pick up new ones:"
+		echo "    mmctl quit; mediamaster -D"
+	fi
+}
+
+cmd_status() {
+	if command -v mediamaster >/dev/null; then
+		echo "installed: $(mediamaster -V) ($(command -v mediamaster))"
+	else
+		echo "installed: nothing (mediamaster not in PATH)"
+	fi
+	echo "repositories ($REPOS):"
+	for r in $(repos); do
+		if [ -d "$r/.git" ] || git -C "$r" rev-parse --git-dir >/dev/null 2>&1; then
+			rev=$(git -C "$r" log -1 --format='%h %s' 2>/dev/null | cut -c1-60)
+			dirty=$([ -n "$(git -C "$r" status --porcelain 2>/dev/null)" ] && echo "  (local changes)")
+			printf '  %s\n      %s%s\n' "$r" "$rev" "$dirty"
+		else
+			printf '  %s\n      (not a git repository)\n' "$r"
+		fi
+	done
+	if command -v mediamaster >/dev/null; then
+		echo "plugins:"
+		mediamaster -L 2>/dev/null | sed 's/^/  /'
+	fi
+}
+
+cmd_add() {
+	[ $# -eq 1 ] || die "usage: mm-update add <path or git URL>"
+	r=$1
+	case $r in
+	*://*|git@*)
+		name=$(basename "$r" .git)
+		mkdir -p "$SRC"
+		[ -d "$SRC/$name" ] || git clone --recurse-submodules "$r" "$SRC/$name" || die "clone failed"
+		r=$SRC/$name ;;
+	*)
+		[ -d "$r" ] || die "$r: not a directory"
+		r=$(cd "$r" && pwd) ;;
+	esac
+	mkdir -p "$CONF"
+	if [ -f "$REPOS" ] && repos | grep -qxF "$r"; then echo "$r is listed"; exit 0; fi
+	printf '%s\n' "$r" >>"$REPOS"
+	echo "added $r to $REPOS"
+}
+
+case ${1:-update} in
+update) cmd_update ;;
+status) cmd_status ;;
+add) shift; cmd_add "$@" ;;
+-h|--help|help) awk 'NR > 3 { if (!/^#/) exit; l = $0; sub(/^# ?/, "", l); print l }' "$0" ;;
+*) die "unknown command '$1' (update, status, add)" ;;
+esac

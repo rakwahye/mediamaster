@@ -5,8 +5,8 @@
 #   make SAN=asan test   same under AddressSanitizer     -> build/asan/
 #   make SAN=tsan test   same under ThreadSanitizer      -> build/tsan/
 #   make check-licenses  every source file carries an SPDX line
-#   make install PREFIX=/usr/local   daemon, mmctl, plugins not built in, and the
-#                                    plugin SDK: mm_plugin.h and mediamaster.pc
+#   make install PREFIX=/usr/local   daemon, mmctl, mm-update, plugins not built in,
+#                                    and the plugin SDK: mm_plugin.h and mediamaster.pc
 #   make uninstall
 
 CC         ?= cc
@@ -194,10 +194,11 @@ smoke: all
 test: unit
 	@$(MAKE) --no-print-directory smoke
 	@sh tests/install.sh $(BUILD)
+	@sh tests/update.sh
 
 check-licenses:
 	@missing=$$(grep -L 'SPDX-License-Identifier' $$(git ls-files -co --exclude-standard \
-		'*.c' '*.h' '*.sh' Makefile) 2>/dev/null); \
+		'*.c' '*.h' '*.sh' 'tools/*' Makefile) 2>/dev/null); \
 	if [ -n "$$missing" ]; then echo "missing SPDX line:"; echo "$$missing"; exit 1; fi; \
 	echo "check-licenses: ok"
 
@@ -207,13 +208,13 @@ INSTALL_SO := $(foreach p,$(filter-out $(PLUGINS_STATIC),$(PLUGINS)),$(BUILD)/pl
 
 install: all
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(PLUGIN_DIR) $(DESTDIR)$(INCLUDEDIR)/mediamaster $(DESTDIR)$(PKGCONFIG_DIR)
-	install -m 755 $(BUILD)/mediamaster $(BUILD)/mmctl $(DESTDIR)$(BINDIR)
+	install -m 755 $(BUILD)/mediamaster $(BUILD)/mmctl tools/mm-update $(DESTDIR)$(BINDIR)
 	$(if $(INSTALL_SO),install -m 644 $(INSTALL_SO) $(DESTDIR)$(PLUGIN_DIR))
 	install -m 644 include/mm_plugin.h $(DESTDIR)$(INCLUDEDIR)/mediamaster
 	install -m 644 $(BUILD)/mediamaster.pc $(DESTDIR)$(PKGCONFIG_DIR)
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/mediamaster $(DESTDIR)$(BINDIR)/mmctl
+	rm -f $(DESTDIR)$(BINDIR)/mediamaster $(DESTDIR)$(BINDIR)/mmctl $(DESTDIR)$(BINDIR)/mm-update
 	rm -f $(foreach p,$(filter-out $(PLUGINS_STATIC),$(PLUGINS)),$(DESTDIR)$(PLUGIN_DIR)/$(p).so)
 	rm -f $(DESTDIR)$(INCLUDEDIR)/mediamaster/mm_plugin.h $(DESTDIR)$(PKGCONFIG_DIR)/mediamaster.pc
 	-rmdir $(DESTDIR)$(INCLUDEDIR)/mediamaster $(DESTDIR)$(PLUGIN_DIR) $(DESTDIR)$(LIBDIR)/mediamaster 2>/dev/null

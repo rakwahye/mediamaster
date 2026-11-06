@@ -161,18 +161,19 @@ int main(int argc, char **argv)
 		}
 	}
 
+	/* Detach before anything is logged, so it all lands in the log file. */
+	if (detach && daemonize(mm_paths_log_file()) != 0) {
+		LOGE(TAG, "daemonize: %s", strerror(errno));
+		return 1;
+	}
+	LOGI(TAG, "mediamaster %s (pid %d)", MM_VERSION, (int)getpid());
+
 	config_load(cfg_path ? cfg_path : mm_paths_config_file());
 	const char *lvl = config_get_str("host.log_level", "info");
 	mm_log_set_level(debug ? MM_LOG_DEBUG
 	                 : !strcmp(lvl, "debug") ? MM_LOG_DEBUG
 	                 : !strcmp(lvl, "warn") ? MM_LOG_WARN
 	                 : !strcmp(lvl, "error") ? MM_LOG_ERROR : MM_LOG_INFO);
-
-	if (detach && daemonize(mm_paths_log_file()) != 0) {
-		LOGE(TAG, "daemonize: %s", strerror(errno));
-		return 1;
-	}
-	LOGI(TAG, "mediamaster %s (pid %d)", MM_VERSION, (int)getpid());
 
 	/* Block before any thread starts; threads inherit the mask. */
 	sigset_t mask;

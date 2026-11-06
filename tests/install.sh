@@ -11,7 +11,7 @@ fail() { echo "install: FAIL: $*"; exit 1; }
 
 make -s install DESTDIR="$T" >/dev/null || fail "make install"
 P="$T/usr/local"
-for f in bin/mediamaster bin/mmctl include/mediamaster/mm_plugin.h lib/pkgconfig/mediamaster.pc; do
+for f in bin/mediamaster bin/mmctl bin/mm-update include/mediamaster/mm_plugin.h lib/pkgconfig/mediamaster.pc; do
 	[ -f "$P/$f" ] || fail "missing $f"
 done
 for p in null raw ffmpeg library; do
