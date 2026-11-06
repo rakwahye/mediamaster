@@ -97,6 +97,38 @@ static int lifecycle(void)
 	return 0;
 }
 
+/* Shutdown order: control plugins first, sources and sinks after. */
+static char g_order[64];
+static int noop_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
+static void ctl_fini(void *priv) { (void)priv; strcat(g_order, "ctl "); }
+static void src_fini(void *priv) { (void)priv; strcat(g_order, "src "); }
+static void snk_fini(void *priv) { (void)priv; strcat(g_order, "snk "); }
+static int src_open(void *priv, const char *uri, void **st, struct mm_stream_info *in)
+{ (void)priv; (void)uri; (void)st; (void)in; return -1; }
+static long src_read(void *st, float *dst, uint32_t frames) { (void)st; (void)dst; (void)frames; return 0; }
+static void src_close(void *st) { (void)st; }
+static int snk_start(void *priv, mm_pull_fn pull, void *ctx) { (void)priv; (void)pull; (void)ctx; return 0; }
+static void snk_stop(void *priv) { (void)priv; }
+static const struct mm_source_ops src_ops = { .open = src_open, .read = src_read, .close = src_close };
+static const struct mm_sink_ops snk_ops = { .start = snk_start, .stop = snk_stop };
+static const struct mm_plugin p_src = { .abi = MM_ABI, .name = "osrc", .schemes = "osrc", .init = noop_init, .fini = src_fini, .source = &src_ops };
+static const struct mm_plugin p_ctl = { .abi = MM_ABI, .name = "octl", .init = noop_init, .fini = ctl_fini };
+static const struct mm_plugin p_snk = { .abi = MM_ABI, .name = "osnk", .init = noop_init, .fini = snk_fini, .sink = &snk_ops };
+
+static int shutdown_order(void)
+{
+	g_order[0] = '\0';
+	CHECK(loader_add(&p_src, NULL, "test") == 0 && loader_add(&p_ctl, NULL, "test") == 0 &&
+	      loader_add(&p_snk, NULL, "test") == 0, "add");
+	loader_init_all();
+	loader_fini_controls();
+	CHECK(!strcmp(g_order, "ctl "), "control plugins alone first");
+	CHECK(loader_state("octl") != MM_PLUGIN_ACTIVE && loader_state("osrc") == MM_PLUGIN_ACTIVE, "sources stay up");
+	loader_fini_all();
+	CHECK(!strcmp(g_order, "ctl snk src "), "then the rest, each fini once");
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	const char *dir = argc > 1 ? argv[1] : "build/plugins";
@@ -106,6 +138,7 @@ int main(int argc, char **argv)
 	RUN(registry);
 	if (dlopen_scan(dir) != 0) return 1;
 	RUN(lifecycle);
+	RUN(shutdown_order);
 	config_free();
 	CHECK_PASS("test-loader");
 }

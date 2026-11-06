@@ -247,6 +247,18 @@ void loader_reload_all(void)
 	}
 }
 
+void loader_fini_controls(void)
+{
+	for (size_t i = s_n; i-- > 0; ) {
+		struct slot *s = &s_slots[i];
+		if (s->state != MM_PLUGIN_ACTIVE || s->p->source || s->p->sink) continue;
+		events_unsubscribe_owner(s->p->name);
+		if (s->p->fini) s->p->fini(s->priv);
+		ipc_unregister_owner(s->p->name);
+		s->state = MM_PLUGIN_DISABLED; /* loader_fini_all only unloads it */
+	}
+}
+
 void loader_fini_all(void)
 {
 	for (size_t i = s_n; i-- > 0; ) {

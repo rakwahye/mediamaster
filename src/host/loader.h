@@ -42,6 +42,11 @@ void loader_reload_all(void);
 
 /** Fini active plugins in reverse order, drop their verbs, dlclose. */
 void loader_fini_all(void);
+/** Shut down the plugins that neither play nor output (control, lists:
+ * MPRIS, the library) while the player still runs, so none of their
+ * threads can call into a player being torn down. loader_fini_all then
+ * only unloads them. */
+void loader_fini_controls(void);
 
 /** Active plugin with source ops claiming URI scheme `scheme`.
  * @returns 0 and fills *p / *priv, or -1. */

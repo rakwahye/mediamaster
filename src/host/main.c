@@ -208,6 +208,9 @@ int main(int argc, char **argv)
 
 	const char *sock = config_get_str("host.socket", mm_paths_socket());
 	if (ipc_start(sock) != 0) {
+		watch_fini();
+		radio_fini();
+		loader_fini_controls();
 		queue_fini();
 		player_fini();
 		loader_fini_all();
@@ -250,7 +253,8 @@ int main(int argc, char **argv)
 	LOGI(TAG, "shutting down");
 	ipc_stop();
 	watch_fini();
-	radio_fini();
+	radio_fini();          /* may be inside a catalog: before those go */
+	loader_fini_controls();
 	queue_fini();
 	player_fini();
 	loader_fini_all();
