@@ -42,6 +42,14 @@ static const struct mm_plugin other_major = { .abi = MM_ABI_MAKE(MM_ABI_MAJOR + 
 static const struct mm_plugin no_point = { .abi = MM_ABI_MAJOR, .name = "ancient", .init = good_init };
 static int plain_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
 static const struct mm_plugin older_minor = { .abi = MM_ABI_MAKE(MM_ABI_MAJOR, 0), .name = "older", .init = plain_init };
+/* Ops tables say their size; one that does not, or lacks a required op, is refused. */
+static long nop_read(void *s, float *d, uint32_t n) { (void)s; (void)d; (void)n; return 0; }
+static int nop_open(void *p, const char *u, void **s, struct mm_stream_info *i) { (void)p; (void)u; (void)s; (void)i; return -1; }
+static void nop_close(void *s) { (void)s; }
+static const struct mm_source_ops unsized_ops = { .open = nop_open, .read = nop_read, .close = nop_close };
+static const struct mm_source_ops noread_ops = { .size = sizeof(struct mm_source_ops), .open = nop_open, .close = nop_close };
+static const struct mm_plugin unsized = { .abi = MM_ABI, .name = "unsized", .schemes = "u", .init = good_init, .source = &unsized_ops };
+static const struct mm_plugin noread = { .abi = MM_ABI, .name = "noread", .schemes = "n", .init = good_init, .source = &noread_ops };
 static const struct mm_plugin bad_name = { .abi = MM_ABI, .name = "has.dot", .init = good_init };
 static const struct mm_plugin no_init = { .abi = MM_ABI, .name = "noinit" };
 static const struct mm_plugin failing = { .abi = MM_ABI, .name = "failing", .init = bad_init, .fini = bad_fini };
@@ -67,6 +75,8 @@ static int registry(void)
 	CHECK(loader_add(&newer_minor, NULL, "x.so") != 0, "built for a newer minor than the host offers: refused");
 	CHECK(loader_add(&other_major, NULL, "x.so") != 0, "another major: refused");
 	CHECK(loader_add(&no_point, NULL, "x.so") != 0, "a number from before the point: refused");
+	CHECK(loader_add(&unsized, NULL, "x.so") != 0, "an ops table without its size: refused");
+	CHECK(loader_add(&noread, NULL, "x.so") != 0, "a source without read: refused");
 	CHECK(loader_add(&bad_name, NULL, "x.so") != 0, "a name with '.' is refused (it would break config prefixes)");
 	CHECK(loader_add(&no_init, NULL, "x.so") != 0, "a plugin without init is refused");
 	CHECK(loader_add(NULL, NULL, "x.so") != 0, "a NULL entry result is refused");
@@ -130,8 +140,8 @@ static long src_read(void *st, float *dst, uint32_t frames) { (void)st; (void)ds
 static void src_close(void *st) { (void)st; }
 static int snk_start(void *priv, mm_pull_fn pull, void *ctx) { (void)priv; (void)pull; (void)ctx; return 0; }
 static void snk_stop(void *priv) { (void)priv; }
-static const struct mm_source_ops src_ops = { .open = src_open, .read = src_read, .close = src_close };
-static const struct mm_sink_ops snk_ops = { .start = snk_start, .stop = snk_stop };
+static const struct mm_source_ops src_ops = { .size = sizeof(struct mm_source_ops), .open = src_open, .read = src_read, .close = src_close };
+static const struct mm_sink_ops snk_ops = { .size = sizeof(struct mm_sink_ops), .start = snk_start, .stop = snk_stop };
 static const struct mm_plugin p_src = { .abi = MM_ABI, .name = "osrc", .schemes = "osrc", .init = noop_init, .fini = src_fini, .source = &src_ops };
 static const struct mm_plugin p_ctl = { .abi = MM_ABI, .name = "octl", .init = noop_init, .fini = ctl_fini };
 static const struct mm_plugin p_snk = { .abi = MM_ABI, .name = "osnk", .init = noop_init, .fini = snk_fini, .sink = &snk_ops };

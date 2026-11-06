@@ -281,7 +281,8 @@ static void reader_join(void)
 	if (!P.reader_on) return;
 	atomic_store(&P.reader_stop, 1);
 	pthread_mutex_lock(&P.slock);
-	if (P.dec.stream && P.dec.src_p->source->interrupt) P.dec.src_p->source->interrupt(P.dec.stream);
+	if (P.dec.stream && MM_OPS_HAS(P.dec.src_p->source, struct mm_source_ops, interrupt))
+		P.dec.src_p->source->interrupt(P.dec.stream);
 	pthread_mutex_unlock(&P.slock);
 	pthread_join(P.reader, NULL);
 	P.reader_on = 0;
@@ -512,7 +513,7 @@ int player_seek_ms(int64_t ms, int relative, char *err, size_t errlen)
 		snprintf(err, errlen, "nothing playing");
 		goto out;
 	}
-	if (!(P.spk.info.flags & MM_STREAM_SEEKABLE) || !P.spk.src_p->source->seek) {
+	if (!(P.spk.info.flags & MM_STREAM_SEEKABLE) || !MM_OPS_HAS(P.spk.src_p->source, struct mm_source_ops, seek)) {
 		snprintf(err, errlen, "not seekable");
 		goto out;
 	}

@@ -23,7 +23,7 @@ static void *s_ctx;
 static int ts_start(void *priv, mm_pull_fn pull, void *ctx) { (void)priv; s_pull = pull; s_ctx = ctx; return 0; }
 static void ts_stop(void *priv) { (void)priv; }
 static int ts_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
-static const struct mm_sink_ops ts_ops = { .start = ts_start, .stop = ts_stop };
+static const struct mm_sink_ops ts_ops = { .size = sizeof(struct mm_sink_ops), .start = ts_start, .stop = ts_stop };
 static const struct mm_plugin testsink = { .abi = MM_ABI, .name = "testsink", .init = ts_init, .sink = &ts_ops };
 
 static float s_buf[MM_PCM_CHANNELS * 4800];
@@ -103,7 +103,7 @@ static int box_radio(void *priv, const struct mm_item *seed, uint32_t flags, mm_
 	return 0;
 }
 static int box_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
-static const struct mm_catalog_ops box_ops = { .list = box_list, .radio = box_radio };
+static const struct mm_catalog_ops box_ops = { .size = sizeof(struct mm_catalog_ops), .list = box_list, .radio = box_radio };
 static const struct mm_plugin boxcat = { .abi = MM_ABI, .name = "box", .schemes = "box", .init = box_init, .catalog = &box_ops };
 
 static atomic_int g_alt_calls;
@@ -121,7 +121,7 @@ static int alt_radio(void *priv, const struct mm_item *seed, uint32_t flags, mm_
 	emit_list(emit, ctx, MM_ITEM_TRACK, "sine:700:0.05", "Alt");
 	return 0;
 }
-static const struct mm_catalog_ops alt_ops = { .list = alt_list, .radio = alt_radio };
+static const struct mm_catalog_ops alt_ops = { .size = sizeof(struct mm_catalog_ops), .list = alt_list, .radio = alt_radio };
 /* "shelf" owns two recordings, by title. */
 static int shelf_match(void *priv, const struct mm_item *want, char *uri, size_t cap)
 {
@@ -132,7 +132,7 @@ static int shelf_match(void *priv, const struct mm_item *want, char *uri, size_t
 	snprintf(uri, cap, "%s", mine);
 	return 1;
 }
-static const struct mm_catalog_ops shelf_ops = { .list = alt_list, .match = shelf_match };
+static const struct mm_catalog_ops shelf_ops = { .size = sizeof(struct mm_catalog_ops), .list = alt_list, .match = shelf_match };
 static const struct mm_plugin shelfcat = { .abi = MM_ABI, .name = "shelf", .schemes = "shelf", .init = box_init, .catalog = &shelf_ops };
 static const struct mm_plugin altcat = { .abi = MM_ABI, .name = "alt", .schemes = "alt", .init = box_init, .catalog = &alt_ops };
 

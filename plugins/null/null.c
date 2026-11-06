@@ -153,6 +153,7 @@ static void null_fini(void *priv)
 }
 
 static const struct mm_sink_ops s_sink = {
+	.size = sizeof(struct mm_sink_ops),
 	.start = null_start,
 	.stop = null_stop,
 };

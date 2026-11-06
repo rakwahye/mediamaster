@@ -536,6 +536,7 @@ static void ff_fini(void *priv)
 }
 
 static const struct mm_source_ops s_source = {
+	.size = sizeof(struct mm_source_ops),
 	.open = ff_open,
 	.read = ff_read,
 	.seek = ff_seek,
@@ -618,7 +619,7 @@ static int ff_list(void *priv, const char *uri, uint32_t flags, mm_item_fn emit,
 	return 0;
 }
 
-static const struct mm_catalog_ops s_catalog = { .list = ff_list };
+static const struct mm_catalog_ops s_catalog = { .size = sizeof(struct mm_catalog_ops), .list = ff_list };
 
 static const struct mm_plugin s_plugin = {
 	.abi = MM_ABI,

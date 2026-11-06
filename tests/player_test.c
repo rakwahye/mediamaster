@@ -77,7 +77,7 @@ static void gate_interrupt(void *st)
 	pthread_mutex_unlock(&g_mu);
 }
 static void gate_close(void *st) { (void)st; }
-static const struct mm_source_ops gate_ops = { .open = gate_open, .read = gate_read, .interrupt = gate_interrupt, .close = gate_close };
+static const struct mm_source_ops gate_ops = { .size = sizeof(struct mm_source_ops), .open = gate_open, .read = gate_read, .interrupt = gate_interrupt, .close = gate_close };
 static int gate_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
 static const struct mm_plugin gatesrc = { .abi = MM_ABI, .name = "gate", .schemes = "gate", .init = gate_init, .source = &gate_ops };
 
@@ -90,8 +90,8 @@ static void ts_stop(void *priv) { (void)priv; s_stopped++; }
 static int ts_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
 static int bad_start(void *priv, mm_pull_fn pull, void *ctx) { (void)priv; (void)pull; (void)ctx; return -1; }
 
-static const struct mm_sink_ops ts_ops = { .start = ts_start, .stop = ts_stop };
-static const struct mm_sink_ops bad_ops = { .start = bad_start, .stop = ts_stop };
+static const struct mm_sink_ops ts_ops = { .size = sizeof(struct mm_sink_ops), .start = ts_start, .stop = ts_stop };
+static const struct mm_sink_ops bad_ops = { .size = sizeof(struct mm_sink_ops), .start = bad_start, .stop = ts_stop };
 static const struct mm_plugin testsink = { .abi = MM_ABI, .name = "testsink", .init = ts_init, .sink = &ts_ops };
 static const struct mm_plugin badsink = { .abi = MM_ABI, .name = "badsink", .init = ts_init, .sink = &bad_ops };
 

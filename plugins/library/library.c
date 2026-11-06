@@ -470,7 +470,7 @@ static int lib_match(void *priv, const struct mm_item *want, char *uri, size_t c
 	return f.hit;
 }
 
-static const struct mm_catalog_ops s_catalog = { .list = lib_list, .match = lib_match };
+static const struct mm_catalog_ops s_catalog = { .size = sizeof(struct mm_catalog_ops), .list = lib_list, .match = lib_match };
 
 static const struct mm_plugin s_plugin = {
 	.abi = MM_ABI,

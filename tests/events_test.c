@@ -20,7 +20,7 @@ static void *s_ctx;
 static int ts_start(void *priv, mm_pull_fn pull, void *ctx) { (void)priv; s_pull = pull; s_ctx = ctx; return 0; }
 static void ts_stop(void *priv) { (void)priv; }
 static int ts_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
-static const struct mm_sink_ops ts_ops = { .start = ts_start, .stop = ts_stop };
+static const struct mm_sink_ops ts_ops = { .size = sizeof(struct mm_sink_ops), .start = ts_start, .stop = ts_stop };
 static const struct mm_plugin testsink = { .abi = MM_ABI, .name = "testsink", .init = ts_init, .sink = &ts_ops };
 
 /* A source whose streams learn their length after open: silence, as long
@@ -55,7 +55,7 @@ static long late_read(void *st, float *dst, uint32_t frames)
 static int late_seek(void *st, uint64_t ms) { (void)st; (void)ms; return 0; }
 static void late_close(void *st) { (void)st; }
 static int late_init(const struct mm_host *h, void **priv) { g_late_h = h; *priv = NULL; return 0; }
-static const struct mm_source_ops late_ops = { .open = late_open, .read = late_read, .seek = late_seek, .close = late_close };
+static const struct mm_source_ops late_ops = { .size = sizeof(struct mm_source_ops), .open = late_open, .read = late_read, .seek = late_seek, .close = late_close };
 static const struct mm_plugin latesrc = { .abi = MM_ABI, .name = "late", .schemes = "late", .init = late_init, .source = &late_ops };
 
 /* The control plugin under test. */

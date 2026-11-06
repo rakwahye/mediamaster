@@ -184,6 +184,7 @@ static void pwsink_fini(void *priv)
 }
 
 static const struct mm_sink_ops s_sink = {
+	.size = sizeof(struct mm_sink_ops),
 	.start = pwsink_start,
 	.stop = pwsink_stop,
 };

@@ -123,6 +123,42 @@ static void refuse(const char *origin, const char *fmt, ...)
 	s_nrefused++;
 }
 
+/* An ops table says its size (MM_OPS_HAS reads later fields by it). It
+ * must reach the ops its first version required, and have them. */
+#define REACHES(type, last) (offsetof(type, last) + sizeof(((type *)0)->last))
+
+static int reaches(const char *origin, const char *name, const char *what, uint32_t size, size_t need)
+{
+	if (size >= need) return 1;
+	refuse(origin, "%s: %s ops .size %u, %zu needed (sizeof the table)", name, what, (unsigned)size, need);
+	return 0;
+}
+
+static int complete(const char *origin, const char *name, const char *what, int required_set)
+{
+	if (required_set) return 1;
+	refuse(origin, "%s: %s ops missing a required op", name, what);
+	return 0;
+}
+
+/* Size first: a table shorter than its first version may not be read. */
+static int tables_ok(const char *origin, const struct mm_plugin *p)
+{
+	if (p->source) {
+		if (!reaches(origin, p->name, "source", p->source->size, REACHES(struct mm_source_ops, close))) return 0;
+		if (!complete(origin, p->name, "source", p->source->open && p->source->read && p->source->close)) return 0;
+	}
+	if (p->sink) {
+		if (!reaches(origin, p->name, "sink", p->sink->size, REACHES(struct mm_sink_ops, stop))) return 0;
+		if (!complete(origin, p->name, "sink", p->sink->start && p->sink->stop)) return 0;
+	}
+	if (p->catalog) {
+		if (!reaches(origin, p->name, "catalog", p->catalog->size, REACHES(struct mm_catalog_ops, list))) return 0;
+		if (!complete(origin, p->name, "catalog", p->catalog->list != NULL)) return 0;
+	}
+	return 1;
+}
+
 int loader_add(const struct mm_plugin *p, void *dl, const char *origin)
 {
 	if (!origin) origin = "?";
@@ -148,6 +184,7 @@ int loader_add(const struct mm_plugin *p, void *dl, const char *origin)
 		refuse(origin, "%s has no init", p->name);
 		return -1;
 	}
+	if (!tables_ok(origin, p)) return -1;
 	for (size_t i = 0; i < s_n; i++) {
 		if (!strcmp(s_slots[i].p->name, p->name)) {
 			LOGI(TAG, "%s: '%s' already provided by %s, skipped", origin, p->name, s_slots[i].origin);
@@ -330,7 +367,7 @@ int loader_find_match(const char *name, const struct mm_plugin **p, void **priv)
 {
 	for (size_t i = 0; i < s_n; i++) {
 		const struct slot *s = &s_slots[i];
-		if (s->state == MM_PLUGIN_ACTIVE && s->p->catalog && s->p->catalog->match && !strcmp(s->p->name, name)) {
+		if (s->state == MM_PLUGIN_ACTIVE && s->p->catalog && MM_OPS_HAS(s->p->catalog, struct mm_catalog_ops, match) && !strcmp(s->p->name, name)) {
 			*p = s->p;
 			*priv = s->priv;
 			return 0;
@@ -343,7 +380,7 @@ int loader_find_radio(const char *name, const struct mm_plugin **p, void **priv)
 {
 	for (size_t i = 0; i < s_n; i++) {
 		const struct slot *s = &s_slots[i];
-		if (s->state == MM_PLUGIN_ACTIVE && s->p->catalog && s->p->catalog->radio && !strcmp(s->p->name, name)) {
+		if (s->state == MM_PLUGIN_ACTIVE && s->p->catalog && MM_OPS_HAS(s->p->catalog, struct mm_catalog_ops, radio) && !strcmp(s->p->name, name)) {
 			*p = s->p;
 			*priv = s->priv;
 			return 0;
@@ -356,7 +393,7 @@ void loader_each_radio(void (*fn)(void *ctx, const char *name), void *ctx)
 {
 	for (size_t i = 0; i < s_n; i++) {
 		const struct slot *s = &s_slots[i];
-		if (s->state == MM_PLUGIN_ACTIVE && s->p->catalog && s->p->catalog->radio) fn(ctx, s->p->name);
+		if (s->state == MM_PLUGIN_ACTIVE && s->p->catalog && MM_OPS_HAS(s->p->catalog, struct mm_catalog_ops, radio)) fn(ctx, s->p->name);
 	}
 }
 

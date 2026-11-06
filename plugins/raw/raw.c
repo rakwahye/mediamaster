@@ -123,6 +123,7 @@ static int raw_init(const struct mm_host *h, void **priv)
 }
 
 static const struct mm_source_ops s_source = {
+	.size = sizeof(struct mm_source_ops),
 	.open = raw_open,
 	.read = raw_read,
 	.seek = raw_seek,

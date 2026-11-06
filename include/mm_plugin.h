@@ -65,6 +65,12 @@ extern "C" {
 	(MM_ABI_MAJOR_OF(built) == MM_ABI_MAJOR_OF(offered) && \
 	 MM_ABI_MINOR_OF(built) <= MM_ABI_MINOR_OF(offered))
 
+/** True if ops table `ops` (a `struct type`) was built with `field` and
+ * sets it. Every ops table starts with `size`, so a field added in a
+ * later MINOR is only read from a plugin that has it. */
+#define MM_OPS_HAS(ops, type, field) \
+	((ops)->size >= offsetof(type, field) + sizeof((ops)->field) && (ops)->field)
+
 /** Policy attributes. The host uses these for the offline switch, rate
  * budgets and credential handling, never for dispatch. */
 enum mm_attr {
@@ -207,6 +213,8 @@ struct mm_stream_info {
  * the host's reader thread, never concurrently for one stream.
  * `interrupt` may come from any thread while `read` is blocked. */
 struct mm_source_ops {
+	uint32_t size; /* sizeof(struct mm_source_ops) as the plugin built it */
+
 	/** Open `uri` (one of the plugin's schemes). Fill *stream and *info.
 	 * @returns 0, or nonzero with nothing to close. */
 	int (*open)(void *priv, const char *uri, void **stream, struct mm_stream_info *info);
@@ -237,6 +245,8 @@ typedef void (*mm_pull_fn)(void *ctx, float *dst, uint32_t frames);
  * and the identification tap all live in the host, so a sink is only a
  * clock and a device. */
 struct mm_sink_ops {
+	uint32_t size; /* sizeof(struct mm_sink_ops) as the plugin built it */
+
 	/** Open the device and start calling `pull(ctx, ...)` from the sink's
 	 * own (preferably realtime) thread. @returns 0 on success. */
 	int (*start)(void *priv, mm_pull_fn pull, void *ctx);
@@ -280,6 +290,8 @@ enum mm_list_flags {
  *
  * `list` runs on a host control thread and may block on the network. */
 struct mm_catalog_ops {
+	uint32_t size; /* sizeof(struct mm_catalog_ops) as the plugin built it */
+
 	/** Hand every item inside `uri` (one of the plugin's schemes) to
 	 * emit(ctx, item), in order, before returning; stop early when emit
 	 * says so. "<scheme>:" with nothing after it is the plugin's top level.
