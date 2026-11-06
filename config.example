@@ -6,13 +6,14 @@
 # they live in the same file, as <plugin>.<key>.
 
 # ---- host
-#host.sink       = pipewire        # null, raw, pipewire; default pipewire if built
+#host.sink       = pipewire, null  # first that starts; a later one is a fallback
 #host.volume     = 100
 #host.preload_s  = 10              # open the next track this long before the end
 #host.log_level  = info            # debug, info, warn, error
 #host.socket     = /run/user/1000/mediamaster.sock
 #host.plugin_dir = ~/.config/mediamaster/plugins:/usr/local/lib/mediamaster/plugins
 #host.disable    =                 # plugins to load but not start, by name
+#host.sink_retry_s = 5             # on a fallback sink, retry the ones listed before it; 0: never
 
 # ---- library: your music folder, indexed in the background
 #library.music_dir  = ~/Music

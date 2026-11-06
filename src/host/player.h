@@ -40,6 +40,12 @@ enum player_event {
  * boundaries, retire finished streams. @returns enum player_event bits. */
 int player_tick(void);
 
+/** On a fallback sink, every host.sink_retry_s (5; 0: never) try the
+ * sinks listed before it again, and move to the first that starts.
+ * Main thread. player_sink_retry tries now; @returns 1 if it moved. */
+void player_sink_tick(void);
+int player_sink_retry(void);
+
 /** Open `uri` as the item to follow the current one without a gap. Replaces
  * an earlier preload. @returns 0, or -1 with a reason. */
 int player_preload(const char *uri, char *err, size_t errlen);

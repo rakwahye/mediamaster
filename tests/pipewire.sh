@@ -1,11 +1,13 @@
 #!/bin/sh
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-# The PipeWire sink survives its server going away: a private PipeWire,
-# WirePlumber and virtual sink in their own runtime dir and session bus,
-# a daemon playing into it, the server killed and started again twice.
-# Position must hold while it is away and move again once it is back, and
-# quitting while it is away must not hang.
+# The PipeWire sink and its server coming and going: a private PipeWire,
+# WirePlumber and virtual sink in their own runtime dir and session bus.
+# First the daemon starts before the server: it falls back to null, plays
+# there, and moves to PipeWire by itself once the server is up. Then the
+# server is killed and started again twice: position must hold while it
+# is away and move again once it is back, and quitting while it is away
+# must not hang.
 #
 # Not part of `make test`: a private WirePlumber may reach for the real
 # sound card. Run it with `make test-pipewire` (SAN= as usual).
@@ -47,15 +49,24 @@ trap cleanup EXIT INT TERM
 pos() { "$B/mmctl" status | sed -n 's/^position: \([0-9]*\).*/\1/p'; }
 moving() { a=$(pos); sleep 1.5; b=$(pos); [ -n "$a" ] && [ -n "$b" ] && [ "$b" -gt "$a" ]; }
 
-up
-HOME="$T" "$B/mediamaster" -c /dev/null -o "host.plugin_dir=$B/plugins" -o host.sink=pipewire \
-	-o "host.socket=$MM_SOCK" 2>"$T/mm.log" &
+sink() { "$B/mmctl" status | sed -n 's/^sink: //p'; }
+
+# --- the server comes up after the daemon
+HOME="$T" "$B/mediamaster" -c /dev/null -o "host.plugin_dir=$B/plugins" -o "host.sink=pipewire, null" \
+	-o host.sink_retry_s=1 -o "host.socket=$MM_SOCK" 2>"$T/mm.log" &
 DPID=$!
 i=0; until [ -S "$MM_SOCK" ]; do i=$((i + 1)); [ $i -lt 50 ] || fail "daemon did not start"; sleep 0.1; done
-grep -q 'sink: pipewire' "$T/mm.log" || fail "the daemon did not take the PipeWire sink"
+[ "$(sink)" = null ] || fail "no server at start: expected the null fallback, got $(sink)"
 "$B/mmctl" play sine:440:600 >/dev/null || fail "play"
 sleep 1
-moving || fail "not playing into PipeWire"
+moving || fail "not playing on the fallback"
+sleep 2
+[ "$(sink)" = null ] || fail "left the fallback with no server"
+[ "$(grep -c 'no PipeWire output' "$T/mm.log")" -le 1 ] || fail "every retry warns"
+up
+i=0; until [ "$(sink)" = pipewire ]; do i=$((i + 1)); [ $i -lt 30 ] || fail "did not move to PipeWire once it was up"; sleep 0.2; done
+grep -q 'sink: pipewire (was null)' "$T/mm.log" || fail "the move is not in the log"
+moving || fail "not playing into PipeWire after the move"
 
 for round in 1 2; do
 	down

@@ -237,6 +237,7 @@ int main(int argc, char **argv)
 		}
 		queue_tick();
 		radio_tick();
+		player_sink_tick();
 		watch_tick(events_poll());
 		if (pr == 0) continue;
 		if (pf[0].revents & POLLIN) {

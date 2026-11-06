@@ -46,6 +46,7 @@ struct pw_priv {
 	pthread_mutex_t mu;
 	pthread_cond_t cv;
 	int up, lost, quit;
+	int failed; /* the last start found no server: the next says so quietly */
 };
 
 static void lost(struct pw_priv *s)
@@ -265,7 +266,13 @@ static int pwsink_start(void *priv, mm_pull_fn pull, void *ctx)
 	if (s->loop || s->have_sup) return -1;
 	s->pull = pull;
 	s->ctx = ctx;
-	if (connect_once(s, 0) != 0) return -1; /* at start the host falls back to the next sink */
+	/* No server: the host falls back to the next sink in host.sink, and
+	 * tries this one again now and then; only the first miss warns. */
+	if (connect_once(s, s->failed) != 0) {
+		s->failed = 1;
+		return -1;
+	}
+	s->failed = 0;
 	if (pthread_create(&s->sup, NULL, supervise, s) != 0) {
 		s->h->log(s->h, MM_LOG_WARN, "no reconnect thread: a PipeWire restart will need a daemon restart");
 		return 0;

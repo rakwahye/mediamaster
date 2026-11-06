@@ -88,10 +88,21 @@ static int s_started, s_stopped;
 static int ts_start(void *priv, mm_pull_fn pull, void *ctx) { (void)priv; s_pull = pull; s_ctx = ctx; s_started++; return 0; }
 static void ts_stop(void *priv) { (void)priv; s_stopped++; }
 static int ts_init(const struct mm_host *h, void **priv) { (void)h; *priv = NULL; return 0; }
-static int bad_start(void *priv, mm_pull_fn pull, void *ctx) { (void)priv; (void)pull; (void)ctx; return -1; }
+/* Fails until s_late_up: a sound server that was not up yet at start. */
+static int s_late_up, s_late_started, s_late_stopped;
+static mm_pull_fn s_late_pull;
+static int bad_start(void *priv, mm_pull_fn pull, void *ctx)
+{
+	(void)priv; (void)ctx;
+	if (!s_late_up) return -1;
+	s_late_pull = pull;
+	s_late_started++;
+	return 0;
+}
+static void late_stop(void *priv) { (void)priv; s_late_stopped++; }
 
 static const struct mm_sink_ops ts_ops = { .size = sizeof(struct mm_sink_ops), .start = ts_start, .stop = ts_stop };
-static const struct mm_sink_ops bad_ops = { .size = sizeof(struct mm_sink_ops), .start = bad_start, .stop = ts_stop };
+static const struct mm_sink_ops bad_ops = { .size = sizeof(struct mm_sink_ops), .start = bad_start, .stop = late_stop };
 static const struct mm_plugin testsink = { .abi = MM_ABI, .name = "testsink", .init = ts_init, .sink = &ts_ops };
 static const struct mm_plugin badsink = { .abi = MM_ABI, .name = "badsink", .init = ts_init, .sink = &bad_ops };
 
@@ -396,6 +407,27 @@ static int gapless(void)
 	return 0;
 }
 
+/* Started on the fallback; the preferred sink comes up later. */
+static int late_sink(void)
+{
+	int ts0 = s_started, tstop0 = s_stopped;
+	CHECK(player_sink_retry() == 0, "the preferred sink still will not start: stay");
+	CHECK(s_stopped == tstop0 + 1 && s_started == ts0 + 1, "the fallback stopped for the attempt and started again");
+	CHECK(s_late_started == 0, "the preferred one was tried and did not start");
+
+	s_late_up = 1;
+	char err[128];
+	CHECK(player_play("sine:500:10", err, sizeof(err)) == 0, "play");
+	pull(480);
+	uint64_t at = player_position_ms();
+	CHECK(player_sink_retry() == 1, "the preferred sink starts: move to it");
+	CHECK(s_late_started == 1 && s_late_pull == s_pull, "it pulls from the same player");
+	CHECK(s_stopped == tstop0 + 2 && s_started == ts0 + 1, "the fallback was stopped, not started again");
+	CHECK(player_position_ms() == at, "nothing played in between");
+	CHECK(player_sink_retry() == 0 && s_late_stopped == 0, "on the preferred sink, nothing more is tried");
+	return 0;
+}
+
 int main(void)
 {
 	config_override("host.sink=badsink, testsink");
@@ -417,8 +449,11 @@ int main(void)
 	RUN(underruns);
 	RUN(gapless);
 
+	RUN(late_sink);
+
+	int stopped = s_stopped;
 	player_fini();
-	CHECK(s_stopped == 1, "fini stops the sink");
+	CHECK(s_late_stopped == 1 && s_stopped == stopped, "fini stops the sink in use, the preferred one now");
 	CHECK(!ipc_has_verb("status"), "fini drops the playback verbs");
 	loader_fini_all();
 	config_free();

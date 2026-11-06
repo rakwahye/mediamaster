@@ -74,6 +74,8 @@ static struct {
 
 	const struct mm_plugin *sink_p;
 	void *sink_priv;
+	int sink_index;        /* its place in host.sink: 0 is the preferred one */
+	uint64_t sink_next_ms; /* when a fallback next tries the ones before it */
 
 	pthread_mutex_t slock; /* spk/dec/nxt, shared with the reader */
 	struct strm spk, dec, nxt;
@@ -843,12 +845,17 @@ static int register_verbs(void)
 
 /* ------------------------------------------------------------------ lifecycle */
 
-static int start_sink(void)
+/* Start the first sink in host.sink that will, among the first `limit`
+ * names (or all, limit < 0). Sets *index to its position in the list.
+ * `quiet`: a retry, so failures are only debug lines. */
+static int start_sink_upto(int limit, int quiet, int *index)
 {
 	char list[256];
 	snprintf(list, sizeof(list), "%s", config_get_str("host.sink", "pipewire,null"));
 	char *save = NULL;
-	for (char *n = strtok_r(list, ", \t", &save); n; n = strtok_r(NULL, ", \t", &save)) {
+	int i = 0;
+	for (char *n = strtok_r(list, ", \t", &save); n && (limit < 0 || i < limit);
+	     n = strtok_r(NULL, ", \t", &save), i++) {
 		const struct mm_plugin *p;
 		void *priv;
 		if (loader_find_sink(n, &p, &priv) != 0) {
@@ -856,14 +863,66 @@ static int start_sink(void)
 			continue;
 		}
 		if (p->sink->start(priv, pull, NULL) == 0) {
+			pthread_mutex_lock(&P.slock);
 			P.sink_p = p;
 			P.sink_priv = priv;
-			LOGI(TAG, "sink: %s", n);
+			pthread_mutex_unlock(&P.slock);
+			*index = i;
 			return 0;
 		}
-		LOGW(TAG, "sink %s failed to start, trying the next", n);
+		if (quiet) LOGD(TAG, "sink %s still not starting", n);
+		else LOGW(TAG, "sink %s failed to start, trying the next", n);
 	}
 	return -1;
+}
+
+static int start_sink(void)
+{
+	if (start_sink_upto(-1, 0, &P.sink_index) != 0) return -1;
+	LOGI(TAG, "sink: %s", P.sink_p->name);
+	P.sink_next_ms = 0;
+	return 0;
+}
+
+/* On a fallback (not the first sink in host.sink, say null because the
+ * sound server was not up yet at start), try the ones before it again.
+ * The current sink stops first: two sinks must never pull at once. If
+ * none of them starts, it starts again; the gap is the attempt's length.
+ * Main thread only, as player_init and player_fini. */
+int player_sink_retry(void)
+{
+	if (!P.inited || !P.sink_p || P.sink_index == 0) return 0;
+	const struct mm_plugin *was_p = P.sink_p;
+	void *was_priv = P.sink_priv;
+	int was_index = P.sink_index;
+	was_p->sink->stop(was_priv);
+	if (start_sink_upto(was_index, 1, &P.sink_index) == 0) {
+		LOGI(TAG, "sink: %s (was %s)", P.sink_p->name, was_p->name);
+		return 1;
+	}
+	if (was_p->sink->start(was_priv, pull, NULL) != 0) {
+		/* It started before; if it will not now, find any that will. */
+		LOGW(TAG, "sink %s did not restart", was_p->name);
+		if (start_sink_upto(-1, 0, &P.sink_index) == 0) LOGI(TAG, "sink: %s", P.sink_p->name);
+		else LOGE(TAG, "no sink will start: no sound until one does");
+		return P.sink_p != was_p;
+	}
+	P.sink_index = was_index;
+	return 0;
+}
+
+void player_sink_tick(void)
+{
+	if (!P.inited || P.sink_index == 0) return;
+	long every = config_get_long("host.sink_retry_s", 5);
+	if (every <= 0) return;
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	uint64_t now = (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
+	if (!P.sink_next_ms) P.sink_next_ms = now + (uint64_t)every * 1000u;
+	if (now < P.sink_next_ms) return;
+	P.sink_next_ms = now + (uint64_t)every * 1000u;
+	player_sink_retry();
 }
 
 int player_init(void)
