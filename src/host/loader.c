@@ -105,23 +105,41 @@ static int in_list(const char *list, const char *name)
 	return 0;
 }
 
+/* Files found but not loaded, for loader_list. */
+static struct refused { char origin[256]; char why[96]; } s_refused[MM_MAX_PLUGINS];
+static size_t s_nrefused;
+
+static void refuse(const char *origin, const char *fmt, ...)
+{
+	char why[96];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(why, sizeof(why), fmt, ap);
+	va_end(ap);
+	LOGW(TAG, "%s: %s, refused", origin, why);
+	if (s_nrefused == MM_MAX_PLUGINS) return;
+	snprintf(s_refused[s_nrefused].origin, sizeof(s_refused[0].origin), "%s", origin);
+	snprintf(s_refused[s_nrefused].why, sizeof(s_refused[0].why), "%s", why);
+	s_nrefused++;
+}
+
 int loader_add(const struct mm_plugin *p, void *dl, const char *origin)
 {
 	if (!origin) origin = "?";
 	if (!p) {
-		LOGW(TAG, "%s: entry returned NULL, refused", origin);
+		refuse(origin, "entry returned NULL");
 		return -1;
 	}
 	if (p->abi != MM_ABI) {
-		LOGW(TAG, "%s: plugin ABI %u, host ABI %u, refused", origin, (unsigned)p->abi, (unsigned)MM_ABI);
+		refuse(origin, "plugin ABI %u, host ABI %u", (unsigned)p->abi, (unsigned)MM_ABI);
 		return -1;
 	}
 	if (!name_ok(p->name)) {
-		LOGW(TAG, "%s: invalid plugin name, refused", origin);
+		refuse(origin, "invalid plugin name");
 		return -1;
 	}
 	if (!p->init) {
-		LOGW(TAG, "%s: %s has no init, refused", origin, p->name);
+		refuse(origin, "%s has no init", p->name);
 		return -1;
 	}
 	for (size_t i = 0; i < s_n; i++) {
@@ -131,7 +149,7 @@ int loader_add(const struct mm_plugin *p, void *dl, const char *origin)
 		}
 	}
 	if (s_n == MM_MAX_PLUGINS) {
-		LOGW(TAG, "%s: plugin table full, refused", origin);
+		refuse(origin, "plugin table full");
 		return -1;
 	}
 	struct slot *s = &s_slots[s_n];
@@ -191,12 +209,14 @@ static void scan_dir(const char *dir)
 		free(names[i]);
 		void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
 		if (!h) {
-			LOGW(TAG, "%s", dlerror());
+			const char *e = dlerror();
+			const char *colon = e ? strstr(e, ": ") : NULL; /* past the path dlerror repeats */
+			refuse(path, "%s", colon ? colon + 2 : e ? e : "dlopen failed");
 			continue;
 		}
 		void *sym = dlsym(h, "mm_plugin_entry");
 		if (!sym) {
-			LOGW(TAG, "%s: no mm_plugin_entry, refused", path);
+			refuse(path, "no mm_plugin_entry");
 			dlclose(h);
 			continue;
 		}
@@ -419,6 +439,18 @@ static void describe_attrs(uint32_t a, char *buf, size_t cap)
 	if (a & MM_ATTR_RATE_LIMITED)   off = list_append(buf, cap, off, &first, "rate-limited");
 	if (a & MM_ATTR_UNOFFICIAL_API) off = list_append(buf, cap, off, &first, "unofficial-api");
 	if (first) snprintf(buf, cap, "-");
+}
+
+void loader_list(FILE *f)
+{
+	fprintf(f, "name\tversion\tabi\tstate\torigin\n");
+	for (size_t i = 0; i < s_n; i++) {
+		const struct slot *s = &s_slots[i];
+		fprintf(f, "%s\t%s\t%u\t%s\t%s\n", s->p->name, s->p->version ? s->p->version : "?", (unsigned)s->p->abi,
+		        s->state == MM_PLUGIN_DISABLED ? "disabled" : "ok", s->origin);
+	}
+	for (size_t i = 0; i < s_nrefused; i++)
+		fprintf(f, "-\t-\t-\trefused: %s\t%s\n", s_refused[i].why, s_refused[i].origin);
 }
 
 void loader_describe(char *buf, size_t cap)

@@ -1,0 +1,37 @@
+# mediamaster configuration: ~/.config/mediamaster/config
+# key = value, one per line; '#' starts a comment. Every key has a default,
+# so an empty file is a working one. `mmctl reload` re-reads it.
+#
+# Plugins installed in their own repositories document their own keys;
+# they live in the same file, as <plugin>.<key>.
+
+# ---- host
+#host.sink       = pipewire        # null, raw, pipewire; default pipewire if built
+#host.volume     = 100
+#host.preload_s  = 10              # open the next track this long before the end
+#host.log_level  = info            # debug, info, warn, error
+#host.socket     = /run/user/1000/mediamaster.sock
+#host.plugin_dir = ~/.config/mediamaster/plugins:/usr/local/lib/mediamaster/plugins
+#host.disable    =                 # plugins to load but not start, by name
+
+# ---- library: your music folder, indexed in the background
+#library.music_dir  = ~/Music
+#library.index      = ~/.cache/mediamaster/library.idx   # or off
+#library.probe_jobs = 4            # ffprobes at once while tagging (1..16)
+
+# ---- playing on
+#radio        = on                 # when the queue is down to its last track, more like it
+#radio.order  = same, *            # providers by plugin name: the track's own source, then the rest
+#radio.batch  = 25
+#own.prefer   = library            # plugins asked for your own copy of a named track; off
+
+# ---- search
+#catalog.search_max = 20           # results per source
+
+# ---- decoding
+#ffmpeg.bin         = ffmpeg
+#ffmpeg.ffprobe     = ffprobe
+#ffmpeg.net_timeout = 15           # seconds, for http(s) sources
+
+# ---- mpris
+#mpris.name = mediamaster          # org.mpris.MediaPlayer2.<name>

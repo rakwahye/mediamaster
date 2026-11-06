@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# mediamaster plugin SDK. A plugin builds with `pkg-config --cflags
+# mediamaster` and installs into `pkg-config --variable=plugindir mediamaster`.
+prefix=@PREFIX@
+includedir=${prefix}/include
+plugindir=@PLUGIN_DIR@
+abi=@ABI@
+
+Name: mediamaster
+Description: mediamaster plugin ABI (mm_plugin.h)
+Version: @VERSION@
+Cflags: -I${includedir}/mediamaster

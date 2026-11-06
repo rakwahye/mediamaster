@@ -2,7 +2,8 @@
 # Third-party code and services
 
 Every external component mediamaster links, vendors, spawns or calls, with its
-license and where it entered the tree. Update this file in the same commit that
+license and where it entered the tree. Plugins in their own repositories keep
+their own file. Update this file in the same commit that
 adds a dependency. `make check-licenses` enforces an SPDX line on our own files.
 
 Project license: LGPL-2.1-or-later (see LICENSE).

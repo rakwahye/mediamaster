@@ -15,6 +15,7 @@
 #define MM_LOADER_H
 
 #include "mm_plugin.h"
+#include <stdio.h>
 #include <stddef.h>
 
 #define MM_MAX_PLUGINS 64
@@ -79,5 +80,10 @@ size_t loader_count(void);
 
 /** One line per plugin: name version state ifaces= attrs= caps= origin. */
 void loader_describe(char *buf, size_t cap);
+
+/** One tab-separated line per plugin found by the scan and the builtins
+ * (name, version, abi, state, origin), then one per file refused, with
+ * why. For `mediamaster -L`. */
+void loader_list(FILE *f);
 
 #endif

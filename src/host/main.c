@@ -103,11 +103,12 @@ static int register_host_verbs(void)
 static void usage(FILE *f)
 {
 	fprintf(f,
-	        "usage: mediamaster [-c config] [-o key=value]... [-d] [-D]\n"
+	        "usage: mediamaster [-c config] [-o key=value]... [-d] [-D] [-L]\n"
 	        "  -c PATH        config file (default %s)\n"
 	        "  -o KEY=VALUE   override a config key; survives reload\n"
 	        "  -d             debug logging\n"
 	        "  -D             detach and log to %s\n"
+	        "  -L             list the plugins that would load, and why any would not, then exit\n"
 	        "  -V             version\n",
 	        mm_paths_config_file(), mm_paths_log_file());
 }
@@ -140,9 +141,9 @@ static int daemonize(const char *log_path)
 int main(int argc, char **argv)
 {
 	const char *cfg_path = NULL;
-	int debug = 0, detach = 0, opt;
+	int debug = 0, detach = 0, list = 0, opt;
 
-	while ((opt = getopt(argc, argv, "c:o:dDVh")) != -1) {
+	while ((opt = getopt(argc, argv, "c:o:dDLVh")) != -1) {
 		switch (opt) {
 		case 'c': cfg_path = optarg; break;
 		case 'o':
@@ -153,6 +154,7 @@ int main(int argc, char **argv)
 			break;
 		case 'd': debug = 1; break;
 		case 'D': detach = 1; break;
+		case 'L': list = 1; break;
 		case 'V': printf("mediamaster %s abi %d\n", MM_VERSION, MM_ABI); return 0;
 		case 'h': usage(stdout); return 0;
 		default: usage(stderr); return 2;
@@ -194,6 +196,11 @@ int main(int argc, char **argv)
 
 	if (config_get_bool("host.builtins", 1)) builtins_add_all();
 	loader_scan(config_get_str("host.plugin_dir", mm_paths_plugin_dirs()));
+	if (list) {
+		loader_list(stdout);
+		loader_fini_all();
+		return 0;
+	}
 	loader_init_all();
 	if (player_init() != 0) {
 		loader_fini_all();
