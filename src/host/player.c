@@ -388,6 +388,10 @@ int player_play(const char *uri, char *err, size_t errlen)
 	P.spk = P.dec = t;
 	pthread_mutex_unlock(&P.slock);
 	atomic_store(&P.dec_frames, 0);
+	/* Report the start at once, as seek does: until the sink reaches the
+	 * START marker it would still count the old item's position under
+	 * the new item. The marker then sets it exactly. */
+	atomic_store(&P.item_frames, 0);
 	push_mark(MM_MARK_START, t.item, 0);
 	atomic_store(&P.paused, 0);
 	int rc = reader_start();

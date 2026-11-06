@@ -223,6 +223,19 @@ static int seeking(void)
 	CHECK(near(s_buf[0], AMP * sin(W * 240000)), "the first frame after seeking to 5 s is the sample at 5 s");
 	CHECK(player_position_ms() == 5010, "position restarts from the seek target");
 
+	/* Playing something else is the same case: the position is the new
+	 * item's from the moment status names the new item. */
+	CHECK(player_play("sine:500:10", err, sizeof(err)) == 0, "play another");
+	CHECK(player_position_ms() == 0, "position is 0 at once, before the sink reaches the START marker");
+	pull(0);
+	CHECK(wait_buffered(480) == 0, "audio is queued");
+	pull(480);
+	CHECK(player_position_ms() == 10, "and counts from there");
+	CHECK(player_seek_ms(5000, 0, err, sizeof(err)) == 0, "back to where the rest of the test expects");
+	pull(0);
+	CHECK(wait_buffered(480) == 0, "audio after the seek is queued");
+	pull(480);
+
 	CHECK(player_seek_ms(-2000, 1, err, sizeof(err)) == 0, "relative seek backwards");
 	pull(0);
 	CHECK(wait_buffered(480) == 0, "queued");
