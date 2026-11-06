@@ -321,6 +321,39 @@ static int edits_drop_preload(void)
 	return 0;
 }
 
+/* queue add with browse/search lines, queue list -l. */
+static int labels(void)
+{
+	char reply[2048], l[64];
+	queue_clear();
+	char *add[] = { "queue", "add", "track\tsine:100:0.05\tLow\tOsc\t-\t0:05", "sine:200:0.05",
+	                "list\tbox:b\tB\t-\t-\t-", NULL };
+	CHECK(ipc_dispatch(5, add, NULL, 0, reply, sizeof(reply)) == MM_OK && !strcmp(reply, "added 1-3"),
+	      "add takes a search line, a URI and a list line");
+	char *ls[] = { "queue", "list", "-l", NULL };
+	CHECK(ipc_dispatch(3, ls, NULL, 0, reply, sizeof(reply)) == MM_REPLY_RAW, "list -l");
+	CHECK(has(reply, "1\tsine:100:0.05\tLow\tOsc\t-\t0:05\n"), "a track line's fields label it");
+	CHECK(has(reply, "2\tsine:200:0.05\t-\t-\t-\t-\n"), "a bare URI has no label");
+	CHECK(has(reply, "3\tsine:350:5\t-\t-\t-\t-\n"), "a list line queues the list's tracks, unlabelled");
+	char err[64];
+	CHECK(queue_play_at(1, err, sizeof(err)) == 0, "play the labelled item");
+	CHECK(ipc_dispatch(3, ls, NULL, 0, reply, sizeof(reply)) == MM_REPLY_RAW &&
+	      has(reply, ">1\tsine:100:0.05\tLow\t"), "> marks the cursor");
+	player_stop();
+
+	char *bad[] = { "queue", "add", "track\t\tNo URI", NULL };
+	CHECK(ipc_dispatch(3, bad, NULL, 0, reply, sizeof(reply)) == MM_ERR, "a line without a URI is refused");
+	char *badl[] = { "queue", "list", "-x", NULL };
+	CHECK(ipc_dispatch(3, badl, NULL, 0, reply, sizeof(reply)) == MM_ERR, "list takes only -l");
+
+	queue_label_make(l, sizeof(l), "a\tb", "-", NULL, "1:01");
+	CHECK(!strcmp(l, "a b\t\t\t1:01"), "label fields: tabs made spaces, - read as empty");
+	queue_label_make(l, sizeof(l), "-", "", NULL, "-");
+	CHECK(!l[0], "an all-empty label is none");
+	queue_clear();
+	return 0;
+}
+
 static int verbs(void)
 {
 	CHECK(ipc_has_verb("play") && ipc_has_verb("next") && ipc_has_verb("prev") && ipc_has_verb("queue"), "queue verbs registered");
@@ -498,6 +531,7 @@ int main(void)
 	RUN(lists);
 	RUN(search);
 	RUN(radio);
+	RUN(labels);
 
 	queue_fini();
 	CHECK(!ipc_has_verb("queue"), "fini drops the verbs");

@@ -94,6 +94,11 @@ if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
 	[ "$(field source)" = ffmpeg ] || fail "a bare path is not routed to ffmpeg"
 	[ "$(field title)" = "Tone One" ] && [ "$(field artist)" = Osc ] && [ "$(field tracknumber)" = 3 ] ||
 		fail "file tags not in status: $("$MMCTL" status | tr '\n' ' ')"
+	i=0 # the queue names what played by its tags
+	until "$MMCTL" queue list -l | grep -q "^>[0-9]*	$T/tone one.flac	Tone One	Osc	-	0:01$"; do
+		i=$((i + 1)); [ $i -lt 20 ] || fail "queue list -l: $("$MMCTL" queue list -l)"
+		sleep 0.05
+	done
 	[ "$(field seekable)" = yes ] || fail "a file should be seekable"
 	case "$(field duration)" in 0.99*|1.00*) ;; *) fail "duration $(field duration)";; esac
 	wait_state stopped 40

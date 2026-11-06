@@ -27,6 +27,12 @@ void queue_fini(void);
 
 /** Append. @returns new 1-based position, or -1. */
 long queue_add(const char *uri);
+/** Append with a label from queue_label_make ("" = none). */
+long queue_add_labeled(const char *uri, const char *label);
+/** "title\tartist\talbum\tduration" with tabs and line breaks in a field
+ * made spaces and "-" read as empty; "" when every field is empty. */
+void queue_label_make(char *out, size_t cap, const char *title, const char *artist, const char *album,
+                      const char *duration);
 /** Insert right after the cursor and play it now. */
 int queue_play_uri(const char *uri, char *err, size_t errlen);
 /** Like queue_play_uri for several URIs: all go in after the current
@@ -56,6 +62,11 @@ unsigned long long queue_generation(void);
 
 /** One line per item, "> " marking the cursor. */
 void queue_list(char *buf, size_t cap);
+/** One line per item: "[>]n\turi\ttitle\tartist\talbum\tduration", ">"
+ * marking the cursor, "-" for what is not known. The label is what
+ * queue_add_labeled was given, replaced by the player's tags once the
+ * item has played. */
+void queue_list_long(char *buf, size_t cap);
 /** 1 with the URI in uri if the current item is the queue's last. */
 int queue_on_last(char *uri, size_t cap);
 /** 1 if `uri` is anywhere in the queue. */
