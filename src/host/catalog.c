@@ -11,6 +11,7 @@
 #include "ipc.h"
 #include "loader.h"
 #include "log.h"
+#include "queue.h"
 #include "uri.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +58,36 @@ static int vec_push(struct vec *a, const char *s)
 	return 0;
 }
 
+/* A URI with its label after the NUL, as one allocation. */
+static int vec_push_entry(struct vec *a, const char *uri, const char *label)
+{
+	if (vec_push(a, "") != 0) return -1;
+	size_t ul = strlen(uri), ll = strlen(label);
+	char *e = malloc(ul + ll + 2);
+	if (!e) return -1;
+	memcpy(e, uri, ul + 1);
+	memcpy(e + ul + 1, label, ll + 1);
+	free(a->v[a->n - 1]);
+	a->v[a->n - 1] = e;
+	return 0;
+}
+
+const char *catalog_label(const char *entry)
+{
+	return entry + strlen(entry) + 1;
+}
+
+void catalog_item_label(const struct mm_item *it, char *out, size_t cap)
+{
+	char dur[24] = "";
+	if (it->duration_ms) {
+		unsigned long long s = (unsigned long long)((it->duration_ms + 500) / 1000);
+		snprintf(dur, sizeof(dur), "%llu:%02llu", s / 60, s % 60);
+	}
+	queue_label_make(out, cap, it->title ? it->title : "", it->artist ? it->artist : "",
+	                 it->album ? it->album : "", dur);
+}
+
 void catalog_free(char **v, long n)
 {
 	for (long i = 0; i < n; i++) free(v[i]);
@@ -69,8 +100,11 @@ struct gather { struct vec items; struct vec kinds; int oom; };
 static int gather(void *ctx, const struct mm_item *it)
 {
 	struct gather *g = ctx;
+	char label[1024] = "";
 	if (!it->uri || (it->kind != MM_ITEM_TRACK && it->kind != MM_ITEM_LIST)) return 0;
-	if (vec_push(&g->items, it->uri) != 0 || vec_push(&g->kinds, it->kind == MM_ITEM_LIST ? "l" : "t") != 0) {
+	if (it->kind == MM_ITEM_TRACK) catalog_item_label(it, label, sizeof(label));
+	if (vec_push_entry(&g->items, it->uri, label) != 0 ||
+	    vec_push(&g->kinds, it->kind == MM_ITEM_LIST ? "l" : "t") != 0) {
 		g->oom = 1;
 		return 1;
 	}
@@ -82,13 +116,13 @@ static int expand(const char *uri, int depth, struct vec *out, long max, char *e
 	struct gather g = { { NULL, 0, 0 }, { NULL, 0, 0 }, 0 };
 	int rc = catalog_list(uri, MM_LIST_URIS, gather, &g, err, errlen);
 	if (rc == MM_NOT_A_LIST) {
-		rc = vec_push(out, uri);
+		rc = vec_push_entry(out, uri, "");
 	} else if (rc == 0 && g.oom) {
 		snprintf(err, errlen, "out of memory");
 		rc = -1;
 	} else if (rc == 0) {
 		for (long i = 0; i < g.items.n && out->n < max && rc == 0; i++) {
-			if (g.kinds.v[i][0] == 't') rc = vec_push(out, g.items.v[i]);
+			if (g.kinds.v[i][0] == 't') rc = vec_push_entry(out, g.items.v[i], catalog_label(g.items.v[i]));
 			else if (depth < MAX_DEPTH) {
 				/* A nested list that fails is skipped, not fatal. */
 				char sub[256];
@@ -113,7 +147,7 @@ long catalog_tracks(const char *uri, char ***out, long max, char *err, size_t er
 	err[0] = '\0';
 	uri_scheme(uri, scheme, sizeof(scheme));
 	if (loader_find_catalog(scheme, &p, &priv) != 0) {
-		if (vec_push(&v, uri) != 0) return -1; /* nothing lists it: one track */
+		if (vec_push_entry(&v, uri, "") != 0) return -1; /* nothing lists it: one track */
 	} else if (expand(uri, 0, &v, max, err, errlen) != 0) {
 		catalog_free(v.v, v.n);
 		return -1;

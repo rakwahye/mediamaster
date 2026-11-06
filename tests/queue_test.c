@@ -334,7 +334,8 @@ static int labels(void)
 	CHECK(ipc_dispatch(3, ls, NULL, 0, reply, sizeof(reply)) == MM_REPLY_RAW, "list -l");
 	CHECK(has(reply, "1\tsine:100:0.05\tLow\tOsc\t-\t0:05\n"), "a track line's fields label it");
 	CHECK(has(reply, "2\tsine:200:0.05\t-\t-\t-\t-\n"), "a bare URI has no label");
-	CHECK(has(reply, "3\tsine:350:5\t-\t-\t-\t-\n"), "a list line queues the list's tracks, unlabelled");
+	CHECK(has(reply, "3\tsine:350:5\tThree-fifty\tArtist Tab\t-\t1:01\n"),
+	      "a list line queues the list's tracks, with the titles the catalog gave");
 	char err[64];
 	CHECK(queue_play_at(1, err, sizeof(err)) == 0, "play the labelled item");
 	CHECK(ipc_dispatch(3, ls, NULL, 0, reply, sizeof(reply)) == MM_REPLY_RAW &&
@@ -395,6 +396,10 @@ static int lists(void)
 
 	/* queue add and play take lists */
 	CHECK(run("queue", "add", "box:a") == MM_OK && !strcmp(R, "added 1-3"), "queue add of a list");
+	CHECK(run("queue", "list", "-l") == MM_REPLY_RAW &&
+	      !strcmp(R, "1\tsine:300:5\tThree\tArtist Tab\t-\t1:01\n2\tsine:350:5\tThree-fifty\tArtist Tab\t-\t1:01\n"
+	                 "3\tsine:400:5\tFour\tArtist Tab\t-\t1:01\n"),
+	      "a list's tracks keep the titles the catalog gave");
 	CHECK(run("queue", "add", "box:empty") == MM_ERR && strstr(R, "nothing to add"), "an empty list adds nothing");
 	CHECK(run("play", "box:b", NULL) == MM_OK && !strcmp(now(), "sine:350:5") && queue_length() == 4,
 	      "play of a list plays its first track");
@@ -458,6 +463,10 @@ static int radio(void)
 	queue_list(list, sizeof(list));
 	CHECK(queue_length() == 4 && strstr(list, "sine:610:0.05") && strstr(list, "sine:630:0.05"),
 	      "610 and 630 added; the seed, the queued 620 and the list left out");
+	char llist[4096];
+	queue_list_long(llist, sizeof(llist));
+	CHECK(strstr(llist, "\tsine:610:0.05\tR1\tArtist Tab\t-\t1:01\n") && strstr(llist, "\tsine:630:0.05\tR3\t"),
+	      "radio's tracks come titled");
 	CHECK(g_radio_calls == 1, "asked once");
 	CHECK(g_seed_ms == 300, "the seed came with its duration");
 	CHECK(g_alt_calls == 0, "the first provider that answered won");

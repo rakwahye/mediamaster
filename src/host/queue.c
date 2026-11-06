@@ -131,7 +131,7 @@ static void remove_block(size_t at, size_t n)
 	if (Q.pre_valid && Q.pre >= (long)(at + n)) Q.pre -= (long)n;
 }
 
-int queue_play_list(char *const *uris, size_t n, char *err, size_t errlen)
+int queue_play_list(char *const *uris, char *const *labels, size_t n, char *err, size_t errlen)
 {
 	if (!n) {
 		snprintf(err, errlen, "nothing to play");
@@ -142,7 +142,7 @@ int queue_play_list(char *const *uris, size_t n, char *err, size_t errlen)
 	size_t at = Q.cur < 0 ? Q.n : (size_t)(Q.cur + (Q.cur_removed ? 0 : 1));
 	if (at > Q.n) at = Q.n;
 	size_t in = 0;
-	while (in < n && insert_at(at + in, uris[in], "") == 0) in++;
+	while (in < n && insert_at(at + in, uris[in], labels ? labels[in] : "") == 0) in++;
 	int rc = -1;
 	if (in < n) {
 		snprintf(err, errlen, "queue full");
@@ -160,7 +160,7 @@ int queue_play_list(char *const *uris, size_t n, char *err, size_t errlen)
 int queue_play_uri(const char *uri, char *err, size_t errlen)
 {
 	char *one[1] = { (char *)uri };
-	return queue_play_list(one, 1, err, errlen);
+	return queue_play_list(one, NULL, 1, err, errlen);
 }
 
 int queue_play_at(long pos, char *err, size_t errlen)
@@ -516,7 +516,10 @@ static int v_play(void *priv, struct mm_verb_ctx *c)
 			snprintf(uri, sizeof(uri), "%s", hit);
 		}
 		long n = catalog_tracks(uri, &v, QUEUE_MAX, err, sizeof(err));
-		int rc = n < 0 ? -1 : queue_play_list(v, (size_t)n, err, sizeof(err));
+		char **lab = n > 0 ? malloc((size_t)n * sizeof(*lab)) : NULL;
+		for (long k = 0; lab && k < n; k++) lab[k] = (char *)catalog_label(v[k]);
+		int rc = n < 0 ? -1 : queue_play_list(v, lab, (size_t)n, err, sizeof(err));
+		free(lab);
 		if (n >= 0) catalog_free(v, n);
 		if (rc != 0) {
 			snprintf(c->reply, c->reply_len, "%s", err);
@@ -586,7 +589,8 @@ static int v_queue(void *priv, struct mm_verb_ctx *c)
 				return MM_ERR;
 			}
 			for (long k = 0; k < n && last != -2; k++) {
-				long at = queue_add_labeled(v[k], n == 1 ? label : "");
+				/* What the line said, else what the catalog gave. */
+				long at = queue_add_labeled(v[k], n == 1 && label[0] ? label : catalog_label(v[k]));
 				if (at < 0) last = -2;
 				else if (first < 0) first = last = at;
 				else last = at;

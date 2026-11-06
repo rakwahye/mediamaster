@@ -16,10 +16,16 @@ int catalog_list(const char *uri, uint32_t flags, mm_item_fn emit, void *ctx, ch
 /** The track URIs `uri` stands for, in order: `uri` itself when it is a
  * track (or no catalog knows its scheme); otherwise every track inside,
  * going into nested lists. At most `max`. *out is malloc'd, each URI
- * too; free with catalog_free. @returns the count (0 for an empty
- * list), or -1 with err set. */
+ * too; free with catalog_free. Each URI is followed, past its NUL, by
+ * the label the catalog gave it for free (catalog_label). @returns the
+ * count (0 for an empty list), or -1 with err set. */
 long catalog_tracks(const char *uri, char ***out, long max, char *err, size_t errlen);
 void catalog_free(char **v, long n);
+/** The label after a URI from catalog_tracks: "title\tartist\talbum\tduration"
+ * as queue_label_make makes it, "" when nothing came with it. */
+const char *catalog_label(const char *entry);
+/** An item's fields as such a label. */
+void catalog_item_label(const struct mm_item *it, char *out, size_t cap);
 
 /** 1 if `text` is words to search for rather than a URI or a path: it
  * is not a path, and no plugin claims the scheme it seems to have. */

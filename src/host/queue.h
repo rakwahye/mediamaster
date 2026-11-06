@@ -37,7 +37,7 @@ void queue_label_make(char *out, size_t cap, const char *title, const char *arti
 int queue_play_uri(const char *uri, char *err, size_t errlen);
 /** Like queue_play_uri for several URIs: all go in after the current
  * item and the first plays; if it cannot, none stay. */
-int queue_play_list(char *const *uris, size_t n, char *err, size_t errlen);
+int queue_play_list(char *const *uris, char *const *labels, size_t n, char *err, size_t errlen);
 /** Play position `pos` (1-based); 0 = the cursor, or the first item. */
 int queue_play_at(long pos, char *err, size_t errlen);
 int queue_next(char *err, size_t errlen);

@@ -16,7 +16,10 @@
  *   radio        = on | off   (also the `radio [on|off]` verb)
  *   radio.order  = same, *    providers by plugin name; "same" is the
  *                             seed's own source, "*" every other one
- *   radio.batch  = 25         tracks added at a time */
+ *   radio.batch  = 25         tracks added at a time
+ *
+ * Providers are asked with titles (no MM_LIST_URIS), so what radio
+ * queues is named in `queue list -l` before it plays. */
 
 #include "radio.h"
 #include "catalog.h"
@@ -68,8 +71,15 @@ static int gather(void *ctx, const struct mm_item *it)
 {
 	struct got *g = ctx;
 	if (it->kind != MM_ITEM_TRACK || !it->uri || g->n == MAX_URIS) return g->n == MAX_URIS;
-	g->uri[g->n] = strdup(it->uri);
-	if (g->uri[g->n]) g->n++;
+	/* The URI, then past its NUL its label, as the queue keeps them. */
+	char label[1024];
+	catalog_item_label(it, label, sizeof(label));
+	size_t ul = strlen(it->uri), ll = strlen(label);
+	char *e = malloc(ul + ll + 2);
+	if (!e) return 0;
+	memcpy(e, it->uri, ul + 1);
+	memcpy(e + ul + 1, label, ll + 1);
+	g->uri[g->n++] = e;
 	return 0;
 }
 
@@ -103,7 +113,8 @@ static int ask_one(const char *name, struct got *g)
 	if (loader_find_radio(name, &p, &priv) != 0) return 0;
 	struct mm_item seed = { MM_ITEM_TRACK, R.seed, R.title[0] ? R.title : NULL, R.artist[0] ? R.artist : NULL,
 	                        R.album[0] ? R.album : NULL, R.duration_ms };
-	int rc = p->catalog->radio(priv, &seed, MM_LIST_URIS, gather, g, err, sizeof(err));
+	/* Titles wanted: a few dozen tracks, and the queue shows them. */
+	int rc = p->catalog->radio(priv, &seed, 0, gather, g, err, sizeof(err));
 	if (rc != 0 || !g->n) {
 		LOGD(TAG, "%s: nothing after %s%s%s", name, R.seed, err[0] ? ": " : "", err);
 		for (int i = 0; i < g->n; i++) free(g->uri[i]);
@@ -153,7 +164,7 @@ static void *fetch(void *arg)
 		long want = batch(), added = 0;
 		for (int i = 0; i < g.n && added < want; i++) {
 			if (!strcmp(g.uri[i], R.seed) || queue_contains(g.uri[i])) continue;
-			if (queue_add(g.uri[i]) < 0) break;
+			if (queue_add_labeled(g.uri[i], catalog_label(g.uri[i])) < 0) break;
 			added++;
 		}
 		LOGI(TAG, "%ld tracks from %s after %s", added, winner, R.seed);
