@@ -120,6 +120,16 @@ W1=$!
 watched "$T/watch" '^ok watching'
 kill $W1; wait $W1 2>/dev/null || true
 
+# watch levels: peaks and a spectrum while there is sound, silence said once
+"$MMCTL" watch levels >"$T/levels" &
+W1=$!
+watched "$T/levels" '^ok watching levels$'
+"$MMCTL" play sine:1000 >/dev/null
+watched "$T/levels" '^levels ([1-9a-f].|0[1-9a-f]) ([1-9a-f].|0[1-9a-f]) [0-9a-f]{64}$'
+"$MMCTL" stop >/dev/null
+watched "$T/levels" '^levels 00 00 0{64}$'
+kill $W1; wait $W1 2>/dev/null || true
+
 # seek on a finite tone
 "$MMCTL" play sine:440:30 >/dev/null || fail "finite play"
 "$MMCTL" seek 20 | grep -q '^ok' || fail "seek"

@@ -2,11 +2,11 @@
 /** @file watch.h
  * @brief `watch`: a connection kept open for events.
  *
- *     watch [state|track|volume|seek|queue|meta]...
+ *     watch [state|track|volume|seek|queue|meta|levels]...
  *
- * No names means all of them. The reply is "ok watching <names>\n"; then,
- * after each main-loop tick in which any of them fired, one line naming
- * those that did, in that order:
+ * No names means all of them but levels. The reply is
+ * "ok watching <names>\n"; then, after each main-loop tick in which any
+ * of them fired, one line naming those that did, in that order:
  *
  *     state track
  *
@@ -14,8 +14,9 @@
  * in one tick share a line, and one undone within a tick (pause and
  * resume) is not seen. The line says what changed, not to what: a
  * client reads `status` or
- * `queue list` for that. A client that hangs up, or stops reading until
- * its socket buffer is full, is dropped.
+ * `queue list` for that. With levels, a "levels ..." line (levels.h)
+ * every tick while there is sound. A client that hangs up, or stops
+ * reading until its socket buffer is full, is dropped.
  *
  * The IPC thread hands connections over (watch_adopt); the main thread
  * writes to them (watch_tick). */

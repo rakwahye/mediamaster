@@ -68,7 +68,7 @@ CFLAGS_mpris := $(shell pkg-config --cflags $(SDBUS_PC) 2>/dev/null) $(if $(filt
 LIBS_mpris := $(shell pkg-config --libs $(SDBUS_PC) 2>/dev/null)
 
 HOST_SRC := main.c log.c config.c paths.c ipc.c loader.c builtins.c ring.c player.c queue.c events.c \
-            catalog.c uri.c radio.c watch.c
+            catalog.c uri.c radio.c watch.c levels.c
 HOST_OBJ := $(addprefix $(BUILD)/host/,$(HOST_SRC:.c=.o)) \
             $(foreach p,$(PLUGINS_STATIC),$(BUILD)/static/$(p).o)
 MMCTL_OBJ := $(BUILD)/obj-mmctl/mmctl.o $(BUILD)/host/paths.o
@@ -144,11 +144,15 @@ $(T)/test-events: tests/events_test.c $(PLAYER_DEPS) $(BUILD)/static/raw.o $(HDR
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) $(filter %.c %.o,$^) $(HOST_LIBS) -o $@
 
+$(T)/test-levels: tests/levels_test.c src/host/levels.c $(HDRS) tests/check.h
+	@mkdir -p $(@D)
+	$(CC) $(TEST_CFLAGS) $(filter %.c,$^) $(HOST_LIBS) -o $@
+
 $(T)/test-libidx: tests/libidx_test.c plugins/library/index.c plugins/library/probe.c $(wildcard plugins/library/*.h) $(HDRS) tests/check.h
 	@mkdir -p $(@D)
 	$(CC) $(TEST_CFLAGS) -Iplugins/library $(filter %.c,$^) -lpthread -o $@
 
-TESTS := $(T)/test-libidx $(T)/test-events $(T)/test-queue $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player $(T)/test-ffmpeg
+TESTS := $(T)/test-levels $(T)/test-libidx $(T)/test-events $(T)/test-queue $(T)/test-config $(T)/test-ipc $(T)/test-loader $(T)/test-ring $(T)/test-player $(T)/test-ffmpeg
 
 unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-config
@@ -158,6 +162,7 @@ unit: $(TESTS) $(PLUGIN_SO)
 	@$(T)/test-player
 	@$(T)/test-queue
 	@$(T)/test-events
+	@$(T)/test-levels
 	@$(T)/test-ffmpeg
 	@$(T)/test-libidx
 

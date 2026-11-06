@@ -4,6 +4,7 @@
 
 #include "watch.h"
 #include "ipc.h"
+#include "levels.h"
 #include "log.h"
 #include "mm_plugin.h"
 #include <errno.h>
@@ -15,9 +16,12 @@
 
 #define TAG "watch"
 
+#define LEVELS (1u << 31) /* not an event: a levels line every tick */
+
 static const struct { const char *name; uint32_t bit; } NAMES[] = {
 	{ "state", MM_EV_STATE }, { "track", MM_EV_TRACK }, { "volume", MM_EV_VOLUME },
 	{ "seek", MM_EV_SEEK }, { "queue", MM_EV_QUEUE }, { "meta", MM_EV_META },
+	{ "levels", LEVELS },
 };
 #define NNAMES (sizeof(NAMES) / sizeof(NAMES[0]))
 #define ALL (MM_EV_STATE | MM_EV_TRACK | MM_EV_VOLUME | MM_EV_SEEK | MM_EV_QUEUE | MM_EV_META)
@@ -98,13 +102,29 @@ static int hung_up(int fd)
 	}
 }
 
+/* Lock held. Send `line` to watchers with `bit`, dropping those that
+ * cannot take it. */
+static void send_to(uint32_t bit, const char *line)
+{
+	int w = 0;
+	for (int i = 0; i < s_n; i++) {
+		if ((s_w[i].mask & bit) && put(s_w[i].fd, line) != 0) {
+			LOGD(TAG, "watcher %d gone", s_w[i].fd);
+			close(s_w[i].fd);
+			continue;
+		}
+		s_w[w++] = s_w[i];
+	}
+	s_n = w;
+}
+
 void watch_tick(uint32_t ev)
 {
 	pthread_mutex_lock(&s_lock);
-	int w = 0;
+	int w = 0, levels = 0;
 	for (int i = 0; i < s_n; i++) {
 		int fd = s_w[i].fd, drop = hung_up(fd);
-		uint32_t m = ev & s_w[i].mask;
+		uint32_t m = ev & s_w[i].mask & ALL;
 		if (!drop && m) {
 			char line[96];
 			names(m, line, sizeof(line) - 1);
@@ -116,9 +136,13 @@ void watch_tick(uint32_t ev)
 			close(fd);
 			continue;
 		}
+		levels |= !!(s_w[i].mask & LEVELS);
 		s_w[w++] = s_w[i];
 	}
 	s_n = w;
+	levels_enable(levels);
+	char line[LEVELS_LINE_MAX];
+	if (levels && levels_line(line, sizeof(line))) send_to(LEVELS, line);
 	pthread_mutex_unlock(&s_lock);
 }
 
@@ -132,7 +156,7 @@ static int v_watch(void *priv, struct mm_verb_ctx *c)
 int watch_init(void)
 {
 	ipc_set_adopt("watch", watch_adopt);
-	return ipc_register("host", "watch", "[state|track|volume|seek|queue|meta]...\tkeep the connection: a line naming what changed, each time something does",
+	return ipc_register("host", "watch", "[state|track|volume|seek|queue|meta|levels]...\tkeep the connection: a line naming what changed, each time something does; levels: peaks and spectrum, 20 a second",
 	                    v_watch, NULL);
 }
 
@@ -142,5 +166,6 @@ void watch_fini(void)
 	pthread_mutex_lock(&s_lock);
 	for (int i = 0; i < s_n; i++) close(s_w[i].fd);
 	s_n = 0;
+	levels_enable(0);
 	pthread_mutex_unlock(&s_lock);
 }
