@@ -33,5 +33,11 @@
 #ffmpeg.ffprobe     = ffprobe
 #ffmpeg.net_timeout = 15           # seconds, for http(s) sources
 
+# ---- output
+#pipewire.target       =           # node.name of a device; empty: the default
+#pipewire.latency_ms   = 20
+#pipewire.timeout_ms   = 2000      # how long one connect waits
+#pipewire.reconnect_ms = 5000      # longest wait between retries after the server goes
+
 # ---- mpris
 #mpris.name = mediamaster          # org.mpris.MediaPlayer2.<name>

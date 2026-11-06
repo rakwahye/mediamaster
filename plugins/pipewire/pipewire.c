@@ -5,15 +5,26 @@
  * One output stream, F32 48 kHz stereo, realtime process callback that
  * calls the host's pull directly into the PipeWire buffer.
  *
+ * When the server goes away (a restart, a crash), the stream drops; a
+ * supervisor thread notices, tears the connection down and builds it
+ * again, retrying with backoff until the server is back. Meanwhile pull is
+ * not called, so playback holds where it was and goes on when the sound
+ * does. Teardown cannot run on PipeWire's own loop thread, hence the
+ * separate thread.
+ *
  * Config:
- *   pipewire.target     = <node.name>   pin to a device; empty = default
- *   pipewire.latency_ms = 20            requested quantum
- *   pipewire.timeout_ms = 2000          how long start waits to connect */
+ *   pipewire.target       = <node.name>   pin to a device; empty = default
+ *   pipewire.latency_ms   = 20            requested quantum
+ *   pipewire.timeout_ms   = 2000          how long one connect waits
+ *   pipewire.reconnect_ms = 5000          longest wait between retries */
 
 #include "mm_plugin.h"
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/utils/result.h>
+#include <errno.h>
+#include <pthread.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,7 +38,26 @@ struct pw_priv {
 	void *ctx;
 	enum pw_stream_state state;
 	int got_state;
+
+	/* The supervisor. `up` is set once a connection is ready, and cleared
+	 * by the loop thread when it drops, which also sets `lost`. */
+	pthread_t sup;
+	int have_sup;
+	pthread_mutex_t mu;
+	pthread_cond_t cv;
+	int up, lost, quit;
 };
+
+static void lost(struct pw_priv *s)
+{
+	pthread_mutex_lock(&s->mu);
+	if (s->up) {
+		s->up = 0;
+		s->lost = 1;
+		pthread_cond_signal(&s->cv);
+	}
+	pthread_mutex_unlock(&s->mu);
+}
 
 static void on_state(void *data, enum pw_stream_state old, enum pw_stream_state state, const char *error)
 {
@@ -39,6 +69,7 @@ static void on_state(void *data, enum pw_stream_state old, enum pw_stream_state 
 		s->h->log(s->h, MM_LOG_WARN, "stream error: %s", error ? error : "?");
 	else
 		s->h->log(s->h, MM_LOG_DEBUG, "stream %s", pw_stream_state_as_string(state));
+	if (state == PW_STREAM_STATE_ERROR || state == PW_STREAM_STATE_UNCONNECTED) lost(s);
 	pw_thread_loop_signal(s->loop, 0);
 }
 
@@ -81,14 +112,11 @@ static void teardown(struct pw_priv *s)
 	if (s->loop) { pw_thread_loop_destroy(s->loop); s->loop = NULL; }
 }
 
-static int pwsink_start(void *priv, mm_pull_fn pull, void *ctx)
+/* One connection: a loop, a stream, ready or not within timeout_ms. */
+static int connect_once(struct pw_priv *s, int quiet)
 {
-	struct pw_priv *s = priv;
-	if (s->loop) return -1;
-	s->pull = pull;
-	s->ctx = ctx;
 	s->got_state = 0;
-
+	s->state = PW_STREAM_STATE_UNCONNECTED;
 	s->loop = pw_thread_loop_new("mediamaster-out", NULL);
 	if (!s->loop) return -1;
 
@@ -131,7 +159,7 @@ static int pwsink_start(void *priv, mm_pull_fn pull, void *ctx)
 	                           PW_STREAM_FLAG_RT_PROCESS,
 	                           params, 1);
 	if (rc < 0) {
-		s->h->log(s->h, MM_LOG_WARN, "connect: %s", spa_strerror(rc));
+		if (!quiet) s->h->log(s->h, MM_LOG_WARN, "connect: %s", spa_strerror(rc));
 		teardown(s);
 		return -1;
 	}
@@ -153,17 +181,97 @@ static int pwsink_start(void *priv, mm_pull_fn pull, void *ctx)
 	pw_thread_loop_unlock(s->loop);
 
 	if (st != PW_STREAM_STATE_PAUSED && st != PW_STREAM_STATE_STREAMING) {
-		s->h->log(s->h, MM_LOG_WARN, "no PipeWire output (%s)", pw_stream_state_as_string(st));
+		if (!quiet) s->h->log(s->h, MM_LOG_WARN, "no PipeWire output (%s)", pw_stream_state_as_string(st));
 		teardown(s);
 		return -1;
 	}
+	pthread_mutex_lock(&s->mu);
+	s->up = 1;
+	s->lost = 0;
+	pthread_mutex_unlock(&s->mu);
+	/* It may have dropped between the wait above and `up`: look again. */
+	pw_thread_loop_lock(s->loop);
+	st = s->state;
+	pw_thread_loop_unlock(s->loop);
+	if (st == PW_STREAM_STATE_ERROR || st == PW_STREAM_STATE_UNCONNECTED) lost(s);
 	s->h->log(s->h, MM_LOG_INFO, "output ready, latency %s", latency);
 	return 0;
 }
 
+/* Wait up to ms for quit; @returns 1 if it came. Called with mu held. */
+static int wait_quit(struct pw_priv *s, long ms)
+{
+	struct timespec t;
+	clock_gettime(CLOCK_REALTIME, &t);
+	t.tv_sec += ms / 1000;
+	t.tv_nsec += (ms % 1000) * 1000000L;
+	if (t.tv_nsec >= 1000000000L) { t.tv_sec++; t.tv_nsec -= 1000000000L; }
+	while (!s->quit)
+		if (pthread_cond_timedwait(&s->cv, &s->mu, &t) == ETIMEDOUT) break;
+	return s->quit;
+}
+
+static void *supervise(void *arg)
+{
+	struct pw_priv *s = arg;
+	long most = cfg_long(s->h, "reconnect_ms", 5000);
+	if (most < 100) most = 100;
+	pthread_mutex_lock(&s->mu);
+	for (;;) {
+		while (!s->lost && !s->quit) pthread_cond_wait(&s->cv, &s->mu);
+		if (s->quit) break;
+		s->lost = 0;
+		pthread_mutex_unlock(&s->mu); /* the loop thread takes mu in on_state */
+		s->h->log(s->h, MM_LOG_WARN, "PipeWire connection lost, reconnecting");
+		teardown(s);
+		long wait = 250, tries = 0;
+		for (;;) {
+			pthread_mutex_lock(&s->mu);
+			int q = wait_quit(s, wait);
+			pthread_mutex_unlock(&s->mu);
+			if (q) break;
+			if (connect_once(s, 1) == 0) {
+				s->h->log(s->h, MM_LOG_INFO, "PipeWire output back after %ld tries", tries + 1);
+				break;
+			}
+			if (++tries == 1 || tries % 20 == 0)
+				s->h->log(s->h, MM_LOG_INFO, "PipeWire still away, retrying");
+			wait = wait * 2 > most ? most : wait * 2;
+		}
+		pthread_mutex_lock(&s->mu);
+	}
+	pthread_mutex_unlock(&s->mu);
+	return NULL;
+}
+
 static void pwsink_stop(void *priv)
 {
-	teardown(priv);
+	struct pw_priv *s = priv;
+	if (s->have_sup) {
+		pthread_mutex_lock(&s->mu);
+		s->quit = 1;
+		pthread_cond_signal(&s->cv);
+		pthread_mutex_unlock(&s->mu);
+		pthread_join(s->sup, NULL); /* it may finish a connect first: timeout_ms at most */
+		s->have_sup = 0;
+	}
+	teardown(s); /* pull is never called after this */
+	s->up = s->lost = s->quit = 0;
+}
+
+static int pwsink_start(void *priv, mm_pull_fn pull, void *ctx)
+{
+	struct pw_priv *s = priv;
+	if (s->loop || s->have_sup) return -1;
+	s->pull = pull;
+	s->ctx = ctx;
+	if (connect_once(s, 0) != 0) return -1; /* at start the host falls back to the next sink */
+	if (pthread_create(&s->sup, NULL, supervise, s) != 0) {
+		s->h->log(s->h, MM_LOG_WARN, "no reconnect thread: a PipeWire restart will need a daemon restart");
+		return 0;
+	}
+	s->have_sup = 1;
+	return 0;
 }
 
 static int pwsink_init(const struct mm_host *h, void **priv)
@@ -171,6 +279,8 @@ static int pwsink_init(const struct mm_host *h, void **priv)
 	struct pw_priv *s = calloc(1, sizeof(*s));
 	if (!s) return -1;
 	s->h = h;
+	pthread_mutex_init(&s->mu, NULL);
+	pthread_cond_init(&s->cv, NULL);
 	pw_init(NULL, NULL);
 	*priv = s;
 	return 0;
@@ -178,8 +288,11 @@ static int pwsink_init(const struct mm_host *h, void **priv)
 
 static void pwsink_fini(void *priv)
 {
-	teardown(priv);
-	free(priv);
+	struct pw_priv *s = priv;
+	pwsink_stop(s);
+	pthread_mutex_destroy(&s->mu);
+	pthread_cond_destroy(&s->cv);
+	free(s);
 	pw_deinit();
 }
 
@@ -192,7 +305,7 @@ static const struct mm_sink_ops s_sink = {
 static const struct mm_plugin s_plugin = {
 	.abi = MM_ABI,
 	.name = "pipewire",
-	.version = "0.1.0",
+	.version = "0.2.0",
 	.description = "PipeWire playback",
 	.init = pwsink_init,
 	.fini = pwsink_fini,

@@ -2,6 +2,7 @@
 #
 #   make                 daemon, mmctl, plugins          -> build/
 #   make test            unit tests + smoke
+#   make test-pipewire   the sink survives a PipeWire restart (a private server)
 #   make SAN=asan test   same under AddressSanitizer     -> build/asan/
 #   make SAN=tsan test   same under ThreadSanitizer      -> build/tsan/
 #   make check-licenses  every source file carries an SPDX line
@@ -87,7 +88,7 @@ $(shell mkdir -p $(BUILD); [ "$$(cat $(BUILD)/.prefix 2>/dev/null)" = "$(PREFIX)
         echo "$(PREFIX) $(PLUGIN_DIR)" > $(BUILD)/.prefix)
 
 .SECONDEXPANSION:
-.PHONY: all test unit smoke check-licenses install uninstall clean
+.PHONY: all test unit smoke test-pipewire check-licenses install uninstall clean
 all: $(BUILD)/mediamaster $(BUILD)/mmctl $(PLUGIN_SO) $(BUILD)/mediamaster.pc
 
 $(BUILD)/mediamaster.pc: mediamaster.pc.in include/mm_plugin.h Makefile $(BUILD)/.prefix
@@ -189,6 +190,10 @@ unit: $(TESTS) $(PLUGIN_SO)
 smoke: all
 	@sh tests/smoke.sh $(BUILD)
 	@sh tests/mpris.sh $(BUILD)
+
+# Opt-in: runs a private PipeWire server, which may reach for the sound card.
+test-pipewire: all
+	@sh tests/pipewire.sh $(BUILD)
 
 # Sequential: smoke times real playback and must not compete with unit tests.
 test: unit
