@@ -28,8 +28,19 @@ SRC=${XDG_DATA_HOME:-$HOME/.local/share}/mediamaster/src
 
 die() { echo "mm-update: $*" >&2; exit 1; }
 
-# Where mediamaster is installed, from its SDK; /usr/local until it is.
-prefix() { pkg-config --variable=prefix mediamaster 2>/dev/null || echo /usr/local; }
+# Where mediamaster is installed: by the daemon in PATH, else its SDK, else
+# /usr/local, where it goes by default.
+prefix() {
+	if p=$(command -v mediamaster 2>/dev/null); then
+		(cd "$(dirname "$p")/.." && pwd)
+	else
+		pkg-config --variable=prefix mediamaster 2>/dev/null || echo /usr/local
+	fi
+}
+
+# pkg-config on some distributions (Arch) does not search /usr/local: tell
+# every build where the SDK is.
+export PKG_CONFIG_PATH="$(prefix)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
 sudo_for_install() {
 	if [ "${MM_SUDO+set}" = set ]; then printf '%s' "$MM_SUDO"; return; fi
@@ -58,10 +69,11 @@ update_one() {
 		echo "    (no upstream branch: not pulled)"
 	fi
 	[ -f "$r/.gitmodules" ] && { git -C "$r" submodule update --init || die "$r: submodules"; }
-	make -C "$r" || die "$r: make failed"
+	make --no-print-directory -C "$r" || die "$r: make failed"
 	s=$(sudo_for_install)
 	[ -n "$s" ] && echo "    install needs $s"
-	$s make -C "$r" install || die "$r: make install failed"
+	# sudo starts with a clean environment: pass the SDK's location through.
+	$s env PKG_CONFIG_PATH="$PKG_CONFIG_PATH" make --no-print-directory -C "$r" install || die "$r: make install failed"
 }
 
 cmd_update() {
