@@ -15,7 +15,7 @@ U=$(cd "$(dirname "$0")/.." && pwd)/tools/mm-update
 # A fake project: make records that it built, make install that it installed.
 mkrepo() { # name
 	mkdir -p "$T/$1" && cd "$T/$1" && git init -q &&
-	printf 'all:\n\t@echo built >>$(HOME)/log-%s\ninstall:\n\t@echo installed >>$(HOME)/log-%s\n' "$1" "$1" >Makefile &&
+	printf 'all:\n\t@echo built >>$(HOME)/log-%s; echo %s >>$(HOME)/log-order\ninstall:\n\t@echo installed >>$(HOME)/log-%s\n' "$1" "$1" "$1" >Makefile &&
 	git add Makefile && git commit -qm init && cd "$T"
 }
 mkrepo one && mkrepo two || fail "fixtures"
@@ -28,6 +28,28 @@ installed" ] && [ "$(cat "$HOME/log-two")" = "built
 installed" ] || fail "both built and installed: $out"
 echo "$out" | grep -q "no upstream branch: not pulled" || fail "a repo without a remote is not pulled: $out"
 echo "$out" | grep -q "2 up to date" || fail "summary: $out"
+
+# The repository carrying the SDK is built first, wherever it is listed.
+mkrepo sdk && touch "$T/sdk/mediamaster.pc.in" || fail "sdk fixture"
+printf '%s/one\n%s/sdk\n%s/two\n' "$T" "$T" "$T" >"$XDG_CONFIG_HOME/mediamaster/repos"
+rm -f "$HOME/log-order"
+"$U" >/dev/null 2>&1 || fail "update with the sdk listed second"
+[ "$(cat "$HOME/log-order")" = "sdk
+one
+two" ] || fail "build order: $(tr '\n' ' ' <"$HOME/log-order")"
+
+# At the end, what the installed daemon refuses is said (a fake daemon here).
+mkdir -p "$T/bin" && cat >"$T/bin/mediamaster" <<'SH'
+#!/bin/sh
+case $1 in
+-V) echo "mediamaster 9.9.9 abi 3.0" ;;
+-L) printf 'name\tversion\tabi\tstate\torigin\nnull\t0.2.0\t3.0\tok\tbuiltin\n-\t-\t-\trefused: built for abi 2.0, host offers 3.0\t/x/old.so\n' ;;
+esac
+SH
+chmod +x "$T/bin/mediamaster"
+out=$(PATH="$T/bin:$PATH" "$U" 2>&1) || fail "update with a fake daemon: $out"
+echo "$out" | grep -q "refuses:" && echo "$out" | grep -q "/x/old.so: built for abi 2.0, host offers 3.0" ||
+	fail "a refused plugin is reported: $out"
 
 # A clone with an upstream is pulled: a commit lands upstream, update sees it.
 git clone -q "$T/one" "$T/one-clone" || fail "clone"

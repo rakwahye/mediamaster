@@ -9,12 +9,17 @@
 #                          (cloned under $XDG_DATA_HOME/mediamaster/src)
 #
 # The list is ~/.config/mediamaster/repos, one per line, '#' for comments,
-# in the order they are built: put mediamaster first, since plugins build
-# against its installed SDK. Each repository is updated with git pull
-# --ff-only (when it tracks a remote), git submodule update --init, make,
-# make install. The first failure stops everything, with that make's
-# output in front of you. Installing uses sudo when the install prefix is
-# not writable; MM_SUDO overrides (MM_SUDO=doas, or MM_SUDO= for never).
+# in the order they are built, except that the repository carrying the
+# SDK (mediamaster itself: it has mediamaster.pc.in) always goes first,
+# since everything else builds against what it installs. Each repository
+# is updated with git pull --ff-only (when it tracks a remote), git
+# submodule update --init, make, make install. The first failure stops
+# everything, with that make's output in front of you. Installing uses
+# sudo when the install prefix is not writable; MM_SUDO overrides
+# (MM_SUDO=doas, or MM_SUDO= for never).
+#
+# At the end the installed daemon is asked which plugins it would load
+# (mediamaster -L): one it refuses is said, with why.
 #
 # Plugins are files: a daemon that is running keeps the ones it loaded.
 # When one is running, the end of an update says so; restart it with
@@ -59,6 +64,12 @@ repos() {
 		done
 }
 
+# The listed repositories in build order: the SDK's first.
+build_order() {
+	repos | while IFS= read -r r; do [ -f "$r/mediamaster.pc.in" ] && printf '%s\n' "$r"; done
+	repos | while IFS= read -r r; do [ -f "$r/mediamaster.pc.in" ] || printf '%s\n' "$r"; done
+}
+
 update_one() {
 	r=$1
 	[ -d "$r" ] || die "$r: not a directory (mm-update add <url> clones one)"
@@ -78,9 +89,13 @@ update_one() {
 
 cmd_update() {
 	n=0
-	for r in $(repos); do update_one "$r"; n=$((n + 1)); done
+	for r in $(build_order); do update_one "$r"; n=$((n + 1)); done
 	[ "$n" -gt 0 ] || die "nothing listed in $REPOS (mm-update add <repo>)"
 	echo "==> $n up to date"
+	if command -v mediamaster >/dev/null; then
+		refused=$(mediamaster -L 2>/dev/null | awk -F'\t' '$4 ~ /^refused/ { print "    " $5 ": " substr($4, 10) }')
+		[ -z "$refused" ] || { echo "the installed daemon ($(mediamaster -V)) refuses:"; echo "$refused"; }
+	fi
 	if command -v mmctl >/dev/null && mmctl version >/dev/null 2>&1; then
 		echo "a daemon is running with the plugins it loaded at start; to pick up new ones:"
 		echo "    mmctl quit; mediamaster -D"
