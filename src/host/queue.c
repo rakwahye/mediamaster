@@ -7,6 +7,7 @@
 
 #include "queue.h"
 #include "catalog.h"
+#include "own.h"
 #include "ipc.h"
 #include "log.h"
 #include "player.h"
@@ -589,8 +590,12 @@ static int v_queue(void *priv, struct mm_verb_ctx *c)
 				return MM_ERR;
 			}
 			for (long k = 0; k < n && last != -2; k++) {
-				/* What the line said, else what the catalog gave. */
-				long at = queue_add_labeled(v[k], n == 1 && label[0] ? label : catalog_label(v[k]));
+				/* What the line said, else what the catalog gave; a line's
+				 * track is swapped for your copy as a list's would be. */
+				const char *lab = n == 1 && label[0] ? label : catalog_label(v[k]);
+				char mine[4096];
+				const char *u = n == 1 && label[0] && own_match(v[k], label, mine, sizeof(mine)) ? mine : v[k];
+				long at = queue_add_labeled(u, lab);
 				if (at < 0) last = -2;
 				else if (first < 0) first = last = at;
 				else last = at;

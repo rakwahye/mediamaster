@@ -26,6 +26,7 @@
 #include "config.h"
 #include "ipc.h"
 #include "loader.h"
+#include "own.h"
 #include "log.h"
 #include "player.h"
 #include "queue.h"
@@ -163,6 +164,7 @@ static void *fetch(void *arg)
 	} else {
 		long want = batch(), added = 0;
 		for (int i = 0; i < g.n && added < want; i++) {
+			own_swap(&g.uri[i]); /* your copy, when you have one */
 			if (!strcmp(g.uri[i], R.seed) || queue_contains(g.uri[i])) continue;
 			if (queue_add_labeled(g.uri[i], catalog_label(g.uri[i])) < 0) break;
 			added++;

@@ -10,6 +10,9 @@
  *   lib:album:<artist>/<album>    its tracks, by disc and track number
  *   lib:search:<words>            tracks whose tags or path hold every word
  *
+ * And `match`: given a recording by title, artist and length from any
+ * source, the file that holds it (match.c), so your copy plays instead.
+ *
  * Names in URIs are percent-encoded ('/', '%' and control characters).
  * A file without tags is filed under "(no artist)" with its folder as the
  * album, so an untagged rip still browses as the folder it came in.
@@ -26,6 +29,7 @@
 #endif
 #include "mm_plugin.h"
 #include "index.h"
+#include "match.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -434,7 +438,39 @@ static void lib_fini(void *priv)
 	free(l);
 }
 
-static const struct mm_catalog_ops s_catalog = { .list = lib_list };
+/* ------------------------------------------------------------------ match */
+
+struct found { struct match_want w; char *uri; size_t cap; int hit; };
+
+static int try_track(void *ctx, const struct libidx_track *t)
+{
+	struct found *f = ctx;
+	char title[512], artist[512], aa[512];
+	libidx_tag(t->tags, "title", title, sizeof(title));
+	libidx_tag(t->tags, "artist", artist, sizeof(artist));
+	libidx_tag(t->tags, "albumartist", aa, sizeof(aa));
+	if (!match_track(&f->w, title, artist, aa, t->rel, t->duration_ms)) return 0;
+	snprintf(f->uri, f->cap, "%s", t->path);
+	f->hit = 1;
+	return 1;
+}
+
+static int lib_match(void *priv, const struct mm_item *want, char *uri, size_t cap)
+{
+	struct lib *l = priv;
+	struct found f;
+	if (!want || !want->title || !want->artist) return 0;
+	match_prepare(&f.w, want->title, want->artist, want->duration_ms);
+	f.uri = uri;
+	f.cap = cap;
+	f.hit = 0;
+	pthread_mutex_lock(&l->lock);
+	if (l->idx) libidx_each(l->idx, try_track, &f);
+	pthread_mutex_unlock(&l->lock);
+	return f.hit;
+}
+
+static const struct mm_catalog_ops s_catalog = { .list = lib_list, .match = lib_match };
 
 static const struct mm_plugin s_plugin = {
 	.abi = MM_ABI,

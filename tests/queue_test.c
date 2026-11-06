@@ -122,6 +122,18 @@ static int alt_radio(void *priv, const struct mm_item *seed, uint32_t flags, mm_
 	return 0;
 }
 static const struct mm_catalog_ops alt_ops = { .list = alt_list, .radio = alt_radio };
+/* "shelf" owns two recordings, by title. */
+static int shelf_match(void *priv, const struct mm_item *want, char *uri, size_t cap)
+{
+	(void)priv;
+	const char *mine = !want->title ? NULL : !strcmp(want->title, "Three") ? "sine:301:5"
+	                 : !strcmp(want->title, "R1") ? "sine:611:0.05" : NULL;
+	if (!mine || !want->artist || want->duration_ms != 61000) return 0;
+	snprintf(uri, cap, "%s", mine);
+	return 1;
+}
+static const struct mm_catalog_ops shelf_ops = { .list = alt_list, .match = shelf_match };
+static const struct mm_plugin shelfcat = { .abi = MM_ABI, .name = "shelf", .schemes = "shelf", .init = box_init, .catalog = &shelf_ops };
 static const struct mm_plugin altcat = { .abi = MM_ABI, .name = "alt", .schemes = "alt", .init = box_init, .catalog = &alt_ops };
 
 static char R[1 << 16];
@@ -517,6 +529,40 @@ static int radio(void)
 	return 0;
 }
 
+static int own(void)
+{
+	char llist[4096];
+	queue_clear();
+	config_override("own.prefer=shelf");
+	config_reload();
+
+	/* Expansion: asks with titles now, and the owned track is swapped. */
+	CHECK(run("queue", "add", "box:a") == MM_OK && !strcmp(R, "added 1-3"), "queue a list");
+	CHECK(g_flags == 0, "with an owner to match against, lists are asked with titles");
+	queue_list_long(llist, sizeof(llist));
+	CHECK(!strncmp(llist, "1\tsine:301:5\tThree\t", 19) && strstr(llist, "2\tsine:350:5\t"),
+	      "the owned copy in its place, the label kept; the rest as they were");
+
+	/* Radio: R1 is owned. */
+	queue_clear();
+	char err[128];
+	CHECK(queue_play_uri("sine:100:0.3", err, sizeof(err)) == 0, "a seed");
+	TICK_UNTIL(queue_length() >= 4);
+	queue_list_long(llist, sizeof(llist));
+	CHECK(strstr(llist, "\tsine:611:0.05\tR1\t") && !strstr(llist, "sine:610"), "radio's track swapped for your copy");
+
+	config_override("own.prefer=off");
+	config_reload();
+	queue_clear();
+	CHECK(run("queue", "add", "box:a") == MM_OK && g_flags == MM_LIST_URIS, "off: URIs only again");
+	queue_list_long(llist, sizeof(llist));
+	CHECK(!strncmp(llist, "1\tsine:300:5\t", 13), "and nothing swapped");
+	player_stop();
+	queue_clear();
+	radio_fini(); /* join the fetch radio started */
+	return 0;
+}
+
 int main(void)
 {
 	config_override("host.sink=testsink");
@@ -525,6 +571,7 @@ int main(void)
 	loader_add(mm_static_entry_raw(), NULL, "builtin");
 	loader_add(&boxcat, NULL, "test");
 	loader_add(&altcat, NULL, "test");
+	loader_add(&shelfcat, NULL, "test");
 	loader_init_all();
 	CHECK(player_init() == 0, "player");
 	CHECK(queue_init() == 0, "queue");
@@ -540,6 +587,7 @@ int main(void)
 	RUN(lists);
 	RUN(search);
 	RUN(radio);
+	RUN(own);
 	RUN(labels);
 
 	queue_fini();

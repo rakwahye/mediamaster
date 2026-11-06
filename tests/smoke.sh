@@ -210,6 +210,14 @@ if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
 	"$MMCTL" queue | sed -n 's/^.. *[0-9]*  //p' | tr '\n' '|' |
 		grep -qx "$A/CD2/1 a.flac|$A/2 two.flac|$A/10 ten.FLAC|" || fail "folder order: $("$MMCTL" queue)"
 	"$MMCTL" search TWO | grep -qx "track	$A/2 two.flac	Two	Osc	LP	0:01" || fail "search: $("$MMCTL" search TWO)"
+	# a track named elsewhere that you own is queued as your copy
+	"$MMCTL" queue clear >/dev/null
+	"$MMCTL" queue add "$(printf 'track\tsine:440:1\tTwo - 2024 Remaster\tOsc, Guest\t-\t0:01')" >/dev/null
+	"$MMCTL" queue list -l | grep -qx "1	$A/2 two.flac	Two - 2024 Remaster	Osc, Guest	-	0:01" ||
+		fail "own copy: $("$MMCTL" queue list -l)"
+	"$MMCTL" queue add "$(printf 'track\tsine:440:1\tTwo\tOsc\t-\t3:00')" >/dev/null
+	"$MMCTL" queue list -l | grep -q "^2	sine:440:1	" || fail "another length is not yours: $("$MMCTL" queue list -l)"
+	"$MMCTL" queue clear >/dev/null
 	"$MMCTL" search osc lp | wc -l | grep -qx 3 || fail "search: by tags"
 	"$MMCTL" search album cd2 | cut -f2 | grep -qx "$A/CD2/1 a.flac" || fail "search: every word, in the path"
 	"$MMCTL" search zzz | grep -qx "no results" || fail "search without hits"

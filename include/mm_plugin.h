@@ -27,8 +27,8 @@
 extern "C" {
 #endif
 
-/* 2: catalog ops gained `radio`. */
-#define MM_ABI 2
+/* 2: catalog ops gained `radio`. 3: and `match`. */
+#define MM_ABI 3
 
 /** Policy attributes. The host uses these for the offline switch, rate
  * budgets and credential handling, never for dispatch. */
@@ -264,6 +264,13 @@ struct mm_catalog_ops {
 	 * the network. @returns 0, or nonzero with the reason in err. */
 	int (*radio)(void *priv, const struct mm_item *seed, uint32_t flags, mm_item_fn emit, void *ctx,
 	             char *err, size_t errlen);
+
+	/** Optional. A track this plugin holds that is the same recording as
+	 * `want`, which may come from any source: judge by title, artist and
+	 * duration. Its URI into uri. Called for every track a list or radio
+	 * adds, so it must answer from memory, quickly, from any thread.
+	 * @returns 1 if found, 0 if not. */
+	int (*match)(void *priv, const struct mm_item *want, char *uri, size_t cap);
 };
 
 /* Interface ops tables not defined yet: leave NULL. */

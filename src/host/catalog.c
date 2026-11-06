@@ -11,6 +11,7 @@
 #include "ipc.h"
 #include "loader.h"
 #include "log.h"
+#include "own.h"
 #include "queue.h"
 #include "uri.h"
 #include <stdio.h>
@@ -114,7 +115,9 @@ static int gather(void *ctx, const struct mm_item *it)
 static int expand(const char *uri, int depth, struct vec *out, long max, char *err, size_t errlen)
 {
 	struct gather g = { { NULL, 0, 0 }, { NULL, 0, 0 }, 0 };
-	int rc = catalog_list(uri, MM_LIST_URIS, gather, &g, err, errlen);
+	/* Titles only cost extra when someone needs them: matching to your
+	 * own copies does. */
+	int rc = catalog_list(uri, own_wanted() ? 0 : MM_LIST_URIS, gather, &g, err, errlen);
 	if (rc == MM_NOT_A_LIST) {
 		rc = vec_push_entry(out, uri, "");
 	} else if (rc == 0 && g.oom) {
@@ -153,6 +156,7 @@ long catalog_tracks(const char *uri, char ***out, long max, char *err, size_t er
 		return -1;
 	}
 	while (v.n > max) free(v.v[--v.n]);
+	for (long i = 0; i < v.n; i++) own_swap(&v.v[i]);
 	*out = v.v;
 	return v.n;
 }
