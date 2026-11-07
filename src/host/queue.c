@@ -231,6 +231,46 @@ int queue_remove(long pos)
 	return rc;
 }
 
+/* An index that names an item (or, with cur_removed, the slot after one),
+ * after the item at i moved to j: it follows its item. */
+static long moved(long x, long i, long j)
+{
+	if (x == i) return j;
+	if (i < j && x > i && x <= j) return x - 1;
+	if (j < i && x >= j && x < i) return x + 1;
+	return x;
+}
+
+int queue_move(long from, long to)
+{
+	pthread_mutex_lock(&Q.lock);
+	if (from < 1 || (size_t)from > Q.n || to < 1 || (size_t)to > Q.n) {
+		pthread_mutex_unlock(&Q.lock);
+		return -1;
+	}
+	long i = from - 1, j = to - 1;
+	if (i != j) {
+		char *e = Q.uri[i];
+		if (i < j) memmove(Q.uri + i, Q.uri + i + 1, (size_t)(j - i) * sizeof(*Q.uri));
+		else memmove(Q.uri + j + 1, Q.uri + j, (size_t)(i - j) * sizeof(*Q.uri));
+		Q.uri[j] = e;
+		if (Q.cur >= 0) Q.cur = moved(Q.cur, i, j);
+		if (Q.pre_valid) Q.pre = moved(Q.pre, i, j);
+		edited();
+	}
+	pthread_mutex_unlock(&Q.lock);
+	return 0;
+}
+
+/* The position the next item to play has, as a 1-based position for
+ * `queue mv <n> next`: right after the cursor, or the top when there is
+ * none. Lock held. */
+static long next_pos(void)
+{
+	long i = Q.cur < 0 ? 0 : Q.cur + (Q.cur_removed ? 0 : 1);
+	return i + 1;
+}
+
 void queue_clear(void)
 {
 	pthread_mutex_lock(&Q.lock);
@@ -618,6 +658,27 @@ static int v_queue(void *priv, struct mm_verb_ctx *c)
 		}
 		return MM_OK;
 	}
+	if (!strcmp(sub, "mv") && c->argc == 4 && parse_pos(c->argv[2], &pos) == 0) {
+		long to;
+		if (!strcmp(c->argv[3], "next")) {
+			/* Right after the cursor: an item taken from above it lands
+			 * one earlier, as the list closes up behind it. */
+			pthread_mutex_lock(&Q.lock);
+			to = next_pos();
+			if (pos < to) to--;
+			if ((size_t)to > Q.n) to = (long)Q.n;
+			pthread_mutex_unlock(&Q.lock);
+		} else if (parse_pos(c->argv[3], &to) != 0) {
+			snprintf(c->reply, c->reply_len, "usage: queue mv <n> <m|next>");
+			return MM_ERR;
+		}
+		if (queue_move(pos, to) != 0) {
+			snprintf(c->reply, c->reply_len, "no item %ld", (size_t)pos > queue_length() ? pos : to);
+			return MM_ERR;
+		}
+		snprintf(c->reply, c->reply_len, "moved %ld to %ld", pos, to);
+		return MM_OK;
+	}
 	if (!strcmp(sub, "clear") && c->argc == 2) {
 		queue_clear();
 		return MM_OK;
@@ -630,7 +691,7 @@ static int v_queue(void *priv, struct mm_verb_ctx *c)
 		snprintf(c->reply, c->reply_len, "playing %ld", pos);
 		return MM_OK;
 	}
-	snprintf(c->reply, c->reply_len, "usage: queue [list [-l] | add <uri|line>... | rm <n> | clear | play <n>]");
+	snprintf(c->reply, c->reply_len, "usage: queue [list [-l] | add <uri|line>... | rm <n> | mv <n> <m|next> | clear | play <n>]");
 	return MM_ERR;
 }
 
@@ -640,7 +701,7 @@ int queue_init(void)
 	rc |= ipc_register("queue", "play", "[uri|words]\tplay a URI, or the first search hit, now (after the current item); or resume/start the queue", v_play, NULL);
 	rc |= ipc_register("queue", "next", "\tnext item in the queue", v_next, NULL);
 	rc |= ipc_register("queue", "prev", "\tprevious item in the queue", v_prev, NULL);
-	rc |= ipc_register("queue", "queue", "[list [-l]|add <uri|line>...|rm <n>|clear|play <n>]\tthe play queue; -l: n uri title artist album duration, tab-separated, > at the cursor", v_queue, NULL);
+	rc |= ipc_register("queue", "queue", "[list [-l]|add <uri|line>...|rm <n>|mv <n> <m|next>|clear|play <n>]\tthe play queue; mv puts item n at position m, or right after the cursor; -l: n uri title artist album duration, tab-separated, > at the cursor", v_queue, NULL);
 	return rc ? -1 : 0;
 }
 

@@ -144,6 +144,12 @@ static int run(const char *a0, const char *a1, const char *a2)
 	return ipc_dispatch(argc, argv, NULL, 0, R, sizeof(R));
 }
 
+static int run4(const char *a0, const char *a1, const char *a2, const char *a3)
+{
+	char *argv[5] = { (char *)a0, (char *)a1, (char *)a2, (char *)a3, NULL };
+	return ipc_dispatch(4, argv, NULL, 0, R, sizeof(R));
+}
+
 static const char *now(void)
 {
 	static char u[256];
@@ -333,6 +339,81 @@ static int edits_drop_preload(void)
 	return 0;
 }
 
+/* queue mv: positions as the list shows them; the cursor and a preload
+ * follow their items. */
+static int moving(void)
+{
+	char err[128], list[1024];
+	queue_clear();
+	queue_add("sine:100:10");
+	queue_add("sine:200:10");
+	queue_add("sine:300:10");
+	queue_add("sine:400:10");
+	queue_add("sine:500:10");
+	queue_play_at(2, err, sizeof(err));
+
+	CHECK(queue_move(5, 1) == 0 && queue_cursor() == 3 && !strcmp(now(), "sine:200:10"), "moving an item from below to above the cursor shifts it down");
+	queue_list(list, sizeof(list));
+	CHECK(has(list, "  1  sine:500:10\n  2  sine:100:10\n> 3  sine:200:10\n  4  sine:300:10\n  5  sine:400:10\n"), "the list reads as moved");
+	CHECK(queue_move(1, 5) == 0 && queue_cursor() == 2, "and back up again");
+	CHECK(queue_move(2, 4) == 0 && queue_cursor() == 4 && !strcmp(now(), "sine:200:10"), "the playing item itself moves, the cursor follows, playback untouched");
+	queue_list(list, sizeof(list));
+	CHECK(has(list, "  1  sine:100:10\n  2  sine:300:10\n  3  sine:400:10\n> 4  sine:200:10\n  5  sine:500:10\n"), "it sits where asked");
+	CHECK(queue_move(3, 3) == 0 && queue_cursor() == 4, "moving onto itself changes nothing");
+	CHECK(queue_move(1, 2) == 0 && queue_cursor() == 4, "a move entirely above the cursor leaves it");
+	CHECK(queue_move(5, 5) == 0 && queue_move(0, 1) != 0 && queue_move(1, 6) != 0 && queue_move(6, 1) != 0, "bad positions are refused");
+	CHECK(queue_next(err, sizeof(err)) == 0 && !strcmp(now(), "sine:500:10"), "next plays what now follows the cursor");
+
+	/* The verb: mv <n> <m>, and mv <n> next for "play this next". */
+	queue_clear();
+	queue_add("sine:100:10");
+	queue_add("sine:200:10");
+	queue_add("sine:300:10");
+	queue_add("sine:400:10");
+	queue_play_at(1, err, sizeof(err));
+	CHECK(run4("queue", "mv", "4", "2") == MM_OK && !strcmp(R, "moved 4 to 2"), "mv <n> <m>");
+	queue_list(list, sizeof(list));
+	CHECK(has(list, "> 1  sine:100:10\n  2  sine:400:10\n  3  sine:200:10\n  4  sine:300:10\n"), "and it is there");
+	CHECK(run4("queue", "mv", "4", "next") == MM_OK && !strcmp(R, "moved 4 to 2"), "mv <n> next puts it right after the cursor");
+	queue_list(list, sizeof(list));
+	CHECK(has(list, "> 1  sine:100:10\n  2  sine:300:10\n  3  sine:400:10\n  4  sine:200:10\n"), "the last item is now next");
+	queue_play_at(3, err, sizeof(err));
+	CHECK(run4("queue", "mv", "1", "next") == MM_OK && !strcmp(R, "moved 1 to 3"), "an item from above the cursor lands after it, one position earlier");
+	queue_list(list, sizeof(list));
+	CHECK(has(list, "  1  sine:300:10\n> 2  sine:400:10\n  3  sine:100:10\n  4  sine:200:10\n"), "it follows the playing item");
+	CHECK(run4("queue", "mv", "9", "1") == MM_ERR && !strcmp(R, "no item 9"), "a bad source");
+	CHECK(run4("queue", "mv", "1", "9") == MM_ERR && !strcmp(R, "no item 9"), "a bad target");
+	CHECK(run4("queue", "mv", "1", "there") == MM_ERR && strstr(R, "usage: queue mv"), "a bad word");
+	player_stop();
+	return 0;
+}
+
+/* A move is an edit: a preload not yet playing is dropped and the next
+ * tick preloads whatever now follows the cursor. */
+static int moving_preload(void)
+{
+	char err[128], list[1024];
+	queue_clear();
+	queue_add("sine:100:5");
+	queue_add("sine:200:5");
+	queue_add("sine:300:5");
+	CHECK(queue_play_at(1, err, sizeof(err)) == 0, "play the first of three");
+	queue_tick();
+	CHECK(player_preload_state() == 1, "the second is preloaded");
+	queue_move(1, 2);
+	CHECK(player_preload_state() == 0, "moving the playing item past the preloaded one drops the preload");
+	queue_list(list, sizeof(list));
+	CHECK(has(list, "  1  sine:200:5\n> 2  sine:100:5\n  3  sine:300:5\n"), "the cursor followed its item");
+	queue_tick();
+	CHECK(player_preload_state() == 1, "and the item now after the cursor is preloaded");
+	queue_move(2, 3);
+	CHECK(player_preload_state() == 0, "the playing item moved to the end: nothing left to preload");
+	queue_tick();
+	CHECK(player_preload_state() == 0 && queue_cursor() == 3, "still nothing");
+	player_stop();
+	return 0;
+}
+
 /* queue add with browse/search lines, queue list -l. */
 static int labels(void)
 {
@@ -340,7 +421,7 @@ static int labels(void)
 	queue_clear();
 	char *add[] = { "queue", "add", "track\tsine:100:0.05\tLow\tOsc\t-\t0:05", "sine:200:0.05",
 	                "list\tbox:b\tB\t-\t-\t-", NULL };
-	CHECK(ipc_dispatch(5, add, NULL, 0, reply, sizeof(reply)) == MM_OK && !strcmp(reply, "added 1-3"),
+	CHECK(ipc_dispatch(5, add, NULL, 0, reply, sizeof(reply)) == MM_OK && !strcmp(R, "added 1-3"),
 	      "add takes a search line, a URI and a list line");
 	char *ls[] = { "queue", "list", "-l", NULL };
 	CHECK(ipc_dispatch(3, ls, NULL, 0, reply, sizeof(reply)) == MM_REPLY_RAW, "list -l");
@@ -582,6 +663,8 @@ int main(void)
 	RUN(basics);
 	RUN(skipping);
 	RUN(editing);
+	RUN(moving);
+	RUN(moving_preload);
 	RUN(gapless);
 	RUN(edits_drop_preload);
 	RUN(lists);

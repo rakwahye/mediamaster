@@ -43,6 +43,10 @@ int queue_play_at(long pos, char *err, size_t errlen);
 int queue_next(char *err, size_t errlen);
 int queue_prev(char *err, size_t errlen);
 int queue_remove(long pos);
+/** Move the item at position `from` so that it sits at `to` (both 1-based).
+ * The cursor and a preload follow their items. @returns 0, -1 for a bad
+ * position. */
+int queue_move(long from, long to);
 void queue_clear(void);
 size_t queue_length(void);
 /** Cursor as a 1-based position, 0 when there is none. */
